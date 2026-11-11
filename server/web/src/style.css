@@ -162,6 +162,10 @@ button.secondary:hover:not(:disabled) {
   background: #2e2922;
 }
 
+button.is-selected {
+  border-color: var(--accent-dim);
+}
+
 button.danger {
   background: transparent;
   color: var(--danger);

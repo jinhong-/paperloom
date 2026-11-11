@@ -42,28 +42,31 @@ export const RAW_FRAME_BYTES = ROW_STRIDE_BYTES * PANEL_HEIGHT;
 export const PALETTE_SIZE = 6;
 
 /**
- * Vendor colour index for each of the six panel colours.
+ * The vendor colour index for each palette position.
  *
- * The order here is the order used by the ditherer's error diffusion: it
- * matches the vendor's own numbering so an index can be used directly as a
- * panel colour code.
+ * The ditherer works with palette *positions* 0-5, but the panel is
+ * addressed with the vendor's colour *codes*, which skip 4. This table
+ * maps one to the other.
+ *
+ * Position:  0 black, 1 white, 2 yellow, 3 red, 4 blue, 5 green
+ * Code:      0 black, 1 white, 2 yellow, 3 red, 5 blue, 6 green
  */
 export const PALETTE_INDICES = [0, 1, 2, 3, 5, 6] as const;
 
 /**
- * Ideal (theoretical) RGB for each colour index in `PALETTE_INDICES`.
+ * The ideal (theoretical) RGB for each palette position.
  *
  * These are the values the reference firmware writes out after dithering, so
  * that a decoded asset is bit-identical to what the device would produce
- * locally. `PALETTE_INDICES[i]` is the index of `THEORETICAL_RGB[i]`.
+ * locally. The order matches `PALETTE_INDICES`.
  */
 export const THEORETICAL_RGB: ReadonlyArray<readonly [number, number, number]> = [
-  [0, 0, 0], // 0 black
-  [255, 255, 255], // 1 white
-  [255, 255, 0], // 2 yellow
-  [255, 0, 0], // 3 red
-  [0, 0, 255], // 5 blue
-  [0, 255, 0], // 6 green
+  [0, 0, 0], // black
+  [255, 255, 255], // white
+  [255, 255, 0], // yellow
+  [255, 0, 0], // red
+  [0, 0, 255], // blue
+  [0, 255, 0], // green
 ];
 
 /**

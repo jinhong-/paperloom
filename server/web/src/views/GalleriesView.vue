@@ -152,7 +152,7 @@ onMounted(async () => {
             <div class="small muted">
               {{ item.photo_count }} photo{{ item.photo_count === 1 ? "" : "s" }} ·
               {{ item.rotation_mode }}
-              <template v-if="item.rotation_mode === "random">
+              <template v-if="item.rotation_mode === 'random'">
                 · every {{ formatInterval(item.min_interval) }}–{{
                   formatInterval(item.max_interval)
                 }}
@@ -161,8 +161,8 @@ onMounted(async () => {
           </div>
           <button
             class="secondary"
+            :class="{ 'is-selected': selected?.id === item.id }"
             @click="selectGallery(item)"
-            :style="selected?.id === item.id ? 'border-color: var(--accent-dim)' : ''"
           >
             {{ selected?.id === item.id ? "Selected" : "Open" }}
           </button>

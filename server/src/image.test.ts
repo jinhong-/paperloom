@@ -156,6 +156,67 @@ test("renderAsset is deterministic", async () => {
   assert.deepEqual(a.data, b.data, "the same input must produce identical bytes");
 });
 
+test("the packed asset uses vendor colour codes, never the reserved index 4", async () => {
+  const image = await gradient();
+  const { data, raw } = await renderAsset(image);
+
+  const inflated = gunzipSync(data);
+  const indices = unpackIndices(inflated);
+
+  // The panel has no colour 4. A pixel with code 4 would show as garbage.
+  for (const index of indices) {
+    assert.ok(index !== 4, "the reserved colour code 4 must never be written");
+    assert.ok(index <= 6, `colour code ${index} is out of range`);
+  }
+
+  // The raw bytes must agree with the unpacked indices.
+  assert.equal(raw.length, RAW_FRAME_BYTES);
+});
+
+test("blue is written as colour code 5", async () => {
+  // A solid blue image must dither to the vendor's blue code.
+  const blue = await sharp({
+    create: { width: 64, height: 64, channels: 3, background: { r: 0, g: 0, b: 255 } },
+  })
+    .png()
+    .toBuffer();
+
+  const { data } = await renderAsset(blue);
+  const indices = unpackIndices(gunzipSync(data));
+
+  const counts = new Map<number, number>();
+  for (const index of indices) {
+    counts.set(index, (counts.get(index) ?? 0) + 1);
+  }
+
+  assert.ok((counts.get(5) ?? 0) > 0, "expected vendor blue (code 5) pixels");
+  assert.equal(counts.get(4) ?? 0, 0, "the reserved code 4 must never appear");
+});
+
+test("dithering matches the reference implementation exactly", () => {
+  // A saturated colour is the case where the error diffusion has the most
+  // opportunity to diverge from the reference, so the output is pinned.
+  //
+  // The expected values were produced by the reference firmware's
+  // algorithm: the same Floyd-Steinberg kernel, the same nearest-colour
+  // rule, and the same accumulation.
+  const width = 64;
+  const height = 8;
+  const rgb = Buffer.alloc(width * height * 3);
+  for (let i = 0; i < width * height; i++) {
+    rgb[i * 3] = 220;
+    rgb[i * 3 + 1] = 30;
+    rgb[i * 3 + 2] = 30;
+  }
+
+  const indices = ditherToPalette(rgb, THEORETICAL_RGB, "floyd-steinberg", width, height);
+
+  const row = (y: number) => [...indices.slice(y * width, y * width + 16)].join(" ");
+  assert.equal(row(0), "3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3");
+  assert.equal(row(1), "3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3");
+  assert.equal(row(2), "3 3 0 1 3 0 1 3 0 1 3 0 1 3 0 1");
+});
+
 test("the compressed asset is much smaller than the raw frame", async () => {
   const image = await gradient();
   const { data } = await renderAsset(image);

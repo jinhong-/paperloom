@@ -5,11 +5,12 @@
  * and starts listening.
  */
 
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 import cookie from "@fastify/cookie";
 import fastify, { type FastifyInstance } from "fastify";
+import fastifyStatic from "@fastify/static";
 
 import { AssetStore } from "./assets/store.js";
 import { registerDeviceApi } from "./api/device.js";
@@ -45,7 +46,7 @@ export interface BuiltServer {
 /**
  * Build the server without starting it. Used by the tests.
  */
-export function buildServer(config: ServerConfig): BuiltServer {
+export async function buildServer(config: ServerConfig): Promise<BuiltServer> {
   const db = openDatabase({ path: join(config.dataDir, "paperloom.db") });
 
   const assetRoot = join(config.dataDir, "assets");
@@ -72,12 +73,33 @@ export function buildServer(config: ServerConfig): BuiltServer {
 
   app.get("/healthz", async () => ({ status: "ok" }));
 
+  // Serve the management UI if it has been built. The UI is a static
+  // bundle produced by `npm run build` in server/web.
+  const webRoot = join(process.cwd(), "web", "dist");
+  if (existsSync(webRoot)) {
+    await app.register(fastifyStatic, { root: webRoot });
+
+    // The client-side router handles everything that is not an API call,
+    // so any unknown path falls back to the app shell.
+    app.setNotFoundHandler(async (request, reply) => {
+      if (request.url.startsWith("/api/")) {
+        await reply.code(404).send({ error: "not found" });
+        return;
+      }
+      await reply.sendFile("index.html");
+    });
+  } else {
+    app.log.warn(
+      `The management UI is not built. Run "npm run build" in server/web to enable it.`,
+    );
+  }
+
   return { app, db, assets, schedules };
 }
 
 async function main(): Promise<void> {
   const config = loadConfig();
-  const { app } = buildServer(config);
+  const { app } = await buildServer(config);
 
   const shutdown = async (signal: string): Promise<void> => {
     app.log.info(`${signal} received, shutting down`);

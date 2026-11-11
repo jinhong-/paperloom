@@ -63,10 +63,13 @@ export const DEFAULT_PALETTE: PanelPalette = {
 /**
  * Pick the palette colour closest to an RGB triple.
  *
- * Distance is measured in linear light rather than sRGB, because the eye
- * judges perceptual difference and sRGB encodes are non-linear. Weighting
- * the channels by their luminance coefficients also keeps the result stable
- * when the panel's response is unevenly biased.
+ * The distance is the plain squared Euclidean distance in sRGB, matching
+ * the reference implementation.
+ *
+ * Linear-light distance was tried and rejected: it weights the green
+ * channel far more heavily than the eye's actual sensitivity for a
+ * saturated colour, which makes a pure red image dither into a chaotic
+ * mix of black, white and yellow instead of clean red.
  */
 export function nearestPaletteIndex(
   r: number,
@@ -78,11 +81,10 @@ export function nearestPaletteIndex(
   let bestDistance = Number.POSITIVE_INFINITY;
   for (let i = 0; i < palette.length; i++) {
     const p = palette[i]!;
-    const dr = linearize(r) - linearize(p[0]);
-    const dg = linearize(g) - linearize(p[1]);
-    const db = linearize(b) - linearize(p[2]);
-    // Weighted squared distance approximates perceived difference.
-    const distance = 0.2126729 * dr * dr + 0.7151522 * dg * dg + 0.072175 * db * db;
+    const dr = r - p[0];
+    const dg = g - p[1];
+    const db = b - p[2];
+    const distance = dr * dr + dg * dg + db * db;
     if (distance < bestDistance) {
       bestDistance = distance;
       best = i;
@@ -191,9 +193,14 @@ export function ditherToPalette(
 
   // Error state per channel per scanline. Three lines are needed because the
   // widest kernels diffuse into row y+2.
-  let current = new Float64Array(width * 3);
-  let next = new Float64Array(width * 3);
-  let next2 = new Float64Array(width * 3);
+  //
+  // The error is kept as integers and the share is truncated on the way in,
+  // exactly as the reference implementation does. Using floating point here
+  // accumulates fractions that the reference discards, which makes the
+  // output drift apart from the reference after a few rows.
+  let current = new Int32Array(width * 3);
+  let next = new Int32Array(width * 3);
+  let next2 = new Int32Array(width * 3);
 
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
@@ -225,10 +232,9 @@ export function ditherToPalette(
         if (!target) continue;
 
         const ti = nx * 3;
-        const share = k.numerator / k.denominator;
-        target[ti] = target[ti]! + errR * share;
-        target[ti + 1] = target[ti + 1]! + errG * share;
-        target[ti + 2] = target[ti + 2]! + errB * share;
+        target[ti] = target[ti]! + Math.trunc((errR * k.numerator) / k.denominator);
+        target[ti + 1] = target[ti + 1]! + Math.trunc((errG * k.numerator) / k.denominator);
+        target[ti + 2] = target[ti + 2]! + Math.trunc((errB * k.numerator) / k.denominator);
       }
     }
 
@@ -272,7 +278,12 @@ export async function renderAsset(
 }
 
 /**
- * Pack palette indices into the 4bpp panel layout.
+ * Pack palette positions into the 4bpp panel layout.
+ *
+ * The ditherer produces palette *positions* 0-5, but the panel is
+ * addressed with the vendor's colour *codes*, which skip 4. The positions
+ * are translated through `PALETTE_INDICES` here, so the asset contains
+ * only codes the panel actually has.
  *
  * Kept local to avoid a circular import between this module and `panel.ts`
  * at the value level (the packer is pure and has no dependencies).
@@ -281,10 +292,20 @@ function packIndicesFrom(indices: Uint8Array): Buffer {
   const out = Buffer.allocUnsafe(indices.length / 2);
   let o = 0;
   for (let i = 0; i < indices.length; i += 2) {
-    out[o++] = ((indices[i]! & 0x0f) << 4) | (indices[i + 1]! & 0x0f);
+    const even = PANEL_CODES[indices[i]!] ?? PANEL_CODES[1]!;
+    const odd = PANEL_CODES[indices[i + 1]!] ?? PANEL_CODES[1]!;
+    out[o++] = (even << 4) | odd;
   }
   return out;
 }
+
+/**
+ * The vendor colour code for each palette position.
+ *
+ * Position 4 (blue) is code 5; code 4 is reserved by the vendor and is
+ * never written to the panel.
+ */
+const PANEL_CODES = [0, 1, 2, 3, 5, 6] as const;
 
 /**
  * Render a preview PNG of what the device will show.

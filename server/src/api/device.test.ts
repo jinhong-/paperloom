@@ -24,7 +24,7 @@ import { join } from "node:path";
 /**
  * Build a server on a throwaway database.
  */
-function makeServer(): BuiltServer {
+async function makeServer(): Promise<BuiltServer> {
   const dir = mkdtempSync(join(tmpdir(), "paperloom-test-"));
   return buildServer({
     host: "127.0.0.1",
@@ -122,7 +122,7 @@ async function signed(
 }
 
 test("the device protocol works end to end", async (t) => {
-  const server = makeServer();
+  const server = await makeServer();
   t.after(async () => {
     await server.app.close();
   });
@@ -302,7 +302,7 @@ test("the device protocol works end to end", async (t) => {
 });
 
 test("the schedule is identical across retries", async (t) => {
-  const server = makeServer();
+  const server = await makeServer();
   t.after(async () => {
     await server.app.close();
   });
@@ -355,7 +355,7 @@ test("the schedule is identical across retries", async (t) => {
 });
 
 test("a device cannot sync before it has been claimed", async (t) => {
-  const server = makeServer();
+  const server = await makeServer();
   t.after(async () => {
     await server.app.close();
   });
@@ -379,3 +379,4 @@ test("a device cannot sync before it has been claimed", async (t) => {
   );
   assert.equal(response.status, 401);
 });
+
