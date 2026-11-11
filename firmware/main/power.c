@@ -1,0 +1,105 @@
+/*
+ * Power management: preparing for and entering deep sleep.
+ *
+ * The e-paper keeps its image without power, so the device spends most of
+ * its time asleep with nothing powered except the RTC. The sequence is:
+ *
+ *   1. Power the panel down (it holds its image on its own).
+ *   2. Stop Wi-Fi.
+ *   3. Persist the state we need on the next wake.
+ *   4. Configure the wake source and timer.
+ *   5. Sleep.
+ *
+ * A deep-sleep wake is much like a reboot: the wake-up path has to be fast,
+ * which is why the board's setup work is minimal and the network is only
+ * brought up when a sync is actually due.
+ */
+
+#include <esp_sleep.h>
+#include <esp_log.h>
+#include <driver/gpio.h>
+#include <esp_timer.h>
+#include <esp_pm.h>
+
+#include "app_config.h"
+#include "board.h"
+#include "display_task.h"
+#include "power.h"
+
+static const char *TAG = "power";
+
+/**
+ * Prepare the device for sleep.
+ *
+ * @param delay_ms How long to sleep, or a negative value to sleep until
+ *                 something wakes us.
+ */
+esp_err_t power_prepare_sleep(int64_t delay_ms) {
+    /* The panel holds its image on its own; power it down so it can rest. */
+    display_task_prepare_sleep();
+
+    /* Wi-Fi draws a lot of power; it must be off during sleep. */
+    board_wifi_stop();
+
+    ESP_LOGI(TAG, "Prepared for sleep (%lld ms)", (long long)delay_ms);
+    return ESP_OK;
+}
+
+/**
+ * Enter deep sleep.
+ *
+ * This call does not return.
+ *
+ * @param delay_ms How long to sleep, or a negative value to sleep until a
+ *                 button press.
+ */
+void power_enter_deep_sleep(int64_t delay_ms) {
+    /* The buttons must be able to wake the device, so they have to be
+     * configured as wake sources with the pull-up enabled. */
+    gpio_config_t wake_conf = {
+        .mode = GPIO_MODE_INPUT,
+        .pin_bit_mask = (1ULL << BUTTON_WAKEUP) | (1ULL << BUTTON_NEXT) | (1ULL << BUTTON_RESET),
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+    };
+    gpio_config(&wake_conf);
+
+#if CONFIG_PM_ENABLE
+    /* Keep the light sleep off during the transition: the display update
+     * is timing sensitive. */
+    esp_pm_config_t pm_config = {
+        .max_freq_mhz = 240,
+        .min_freq_mhz = 40,
+        .light_sleep_enable = false,
+    };
+    esp_pm_configure(&pm_config);
+#endif
+    if (delay_ms > 0) {
+        /* Cap the timer at the maximum the RTC can represent, so that a
+         * very long delay does not overflow. */
+        const uint64_t max_delay = 0xFFFFFFFFULL * 1000ULL;
+        uint64_t actual = (uint64_t)delay_ms;
+        if (actual > max_delay) {
+            actual = max_delay;
+        }
+
+        ESP_LOGI(TAG, "Sleeping for %llu ms", (unsigned long long)actual);
+        esp_sleep_enable_timer_wakeup(actual * 1000ULL);
+    } else {
+        ESP_LOGI(TAG, "Sleeping until woken");
+    }
+
+    /* Any button can wake the device.
+     *
+     * The buttons are active-high with an internal pull-up, so a press
+     * pulls the line low. On the ESP32-S3 the ext1 wake source therefore
+     * has to be ANY_LOW.
+     */
+    uint64_t button_mask = (1ULL << BUTTON_WAKEUP) | (1ULL << BUTTON_NEXT) |
+                           (1ULL << BUTTON_RESET);
+    esp_sleep_enable_ext1_wakeup_io(button_mask, ESP_EXT1_WAKEUP_ANY_LOW);
+
+    /* Start the deep sleep. The pins held by the e-paper driver stay in
+     * their low-power state because gpio_deep_sleep_hold_en was called
+     * before we got here. */
+    esp_deep_sleep_start();
+}

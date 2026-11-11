@@ -1,0 +1,204 @@
+/*
+ * Displaying an asset.
+ *
+ * The pipeline is: download the gzip container -> verify its hash ->
+ * inflate it into the frame buffer -> push it to the panel.
+ *
+ * The frame buffer is 960,000 bytes, which does not fit in internal RAM, so
+ * it lives in PSRAM. The device must have PSRAM for this to work; the
+ * ESP32-133C02 has it.
+ */
+
+#include <stdlib.h>
+#include <string.h>
+
+#include "esp_err.h"
+#include "esp_heap_caps.h"
+#include "esp_log.h"
+#include "zlib.h"
+
+#include "app_config.h"
+#include "display_task.h"
+#include "epaper.h"
+#include "schedule.h"
+#include "storage.h"
+#include "sync.h"
+
+static const char *TAG = "display";
+
+/* The frame buffer. Allocated once and reused. */
+static uint8_t *s_frame = NULL;
+
+/* The panel needs a reset and init sequence before each update. */
+static bool s_panel_ready = false;
+
+esp_err_t display_task_init(void) {
+    if (s_frame == NULL) {
+        s_frame = heap_caps_malloc(PANEL_FRAME_BYTES, MALLOC_CAP_SPIRAM);
+        if (s_frame == NULL) {
+            ESP_LOGE(TAG, "Failed to allocate the %d byte frame buffer", PANEL_FRAME_BYTES);
+            return ESP_ERR_NO_MEM;
+        }
+        ESP_LOGI(TAG, "Frame buffer allocated (%d bytes in PSRAM)", PANEL_FRAME_BYTES);
+    }
+
+    if (!s_panel_ready) {
+        epaper_config_t cfg = {
+            .spi_host = EPD_SPI_HOST,
+            .pin_cs = EPD_CS,
+            .pin_cs1 = EPD_CS1,
+            .pin_dc = EPD_DC,
+            .pin_rst = EPD_RST,
+            .pin_busy = EPD_BUSY,
+            .pin_enable = EPD_ENABLE,
+        };
+        epaper_init(&cfg);
+        s_panel_ready = true;
+    }
+
+    return ESP_OK;
+}
+
+/**
+ * Inflate a gzip asset into the frame buffer.
+ *
+ * The inflated size must be exactly one frame; anything else means the
+ * asset is corrupt or was produced for a different panel.
+ */
+static esp_err_t inflate_to_frame(const uint8_t *compressed, size_t compressed_len) {
+    z_stream strm = {0};
+    strm.avail_in = compressed_len;
+    strm.next_in = (Bytef *)compressed;
+    strm.avail_out = PANEL_FRAME_BYTES;
+    strm.next_out = s_frame;
+
+    /* 16 + MAX_WBITS selects gzip framing. */
+    if (inflateInit2(&strm, 16 + MAX_WBITS) != Z_OK) {
+        ESP_LOGE(TAG, "inflateInit2 failed");
+        return ESP_FAIL;
+    }
+
+    int ret = inflate(&strm, Z_FINISH);
+    size_t produced = PANEL_FRAME_BYTES - strm.avail_out;
+    inflateEnd(&strm);
+
+    if (ret != Z_STREAM_END) {
+        ESP_LOGE(TAG, "Decompression failed: %d", ret);
+        return ESP_FAIL;
+    }
+
+    if (produced != PANEL_FRAME_BYTES) {
+        ESP_LOGE(TAG, "Asset inflated to %d bytes, expected %d", (int)produced, PANEL_FRAME_BYTES);
+        return ESP_FAIL;
+    }
+
+    return ESP_OK;
+}
+
+/**
+ * Show an asset.
+ *
+ * If the asset is not cached it is downloaded first. The download is staged
+ * and verified before being committed to the cache, so a failure leaves the
+ * previous image on the panel rather than a blank one.
+ */
+display_result_t display_task_show_asset(const char *asset_hash) {
+    if (asset_hash == NULL || asset_hash[0] == '\0') {
+        return DISPLAY_ERROR;
+    }
+
+    /* Nothing to do if this asset is already on the panel. Refreshing the
+     * panel costs 30 seconds and flashes it, so it is worth avoiding. */
+    const char *current = schedule_displayed_asset();
+    if (current != NULL && strcmp(current, asset_hash) == 0) {
+        ESP_LOGI(TAG, "Asset %s is already displayed", asset_hash);
+        return DISPLAY_OK;
+    }
+
+    if (!storage_has_asset(asset_hash)) {
+        ESP_LOGI(TAG, "Asset %s is not cached; downloading", asset_hash);
+        if (sync_download_asset(asset_hash) != SYNC_OK) {
+            ESP_LOGW(TAG, "Could not download asset %s", asset_hash);
+            return DISPLAY_ERROR;
+        }
+    }
+
+    /* Read and inflate. The compressed form is at most a few hundred
+     * kilobytes, so a temporary buffer is enough. */
+    size_t compressed_len = storage_asset_size(asset_hash);
+    if (compressed_len == 0 || compressed_len > SYNC_MAX_ASSET_BYTES) {
+        ESP_LOGE(TAG, "Cached asset %s has an implausible size (%d)", asset_hash,
+                 (int)compressed_len);
+        return DISPLAY_ERROR;
+    }
+
+    uint8_t *compressed = malloc(compressed_len);
+    if (compressed == NULL) {
+        return DISPLAY_ERROR;
+    }
+
+    size_t read_len = 0;
+    esp_err_t err = storage_read_asset(asset_hash, compressed, compressed_len, &read_len);
+    if (err != ESP_OK || read_len != compressed_len) {
+        ESP_LOGE(TAG, "Failed to read the cached asset %s", asset_hash);
+        free(compressed);
+        return DISPLAY_ERROR;
+    }
+
+    err = inflate_to_frame(compressed, compressed_len);
+    free(compressed);
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Could not expand asset %s", asset_hash);
+        /* The cached copy is unusable; drop it so a later sync can fetch a
+         * fresh one. */
+        storage_remove_asset(asset_hash);
+        return DISPLAY_ERROR;
+    }
+
+    ESP_LOGI(TAG, "Pushing asset %s to the panel", asset_hash);
+    epaper_display(s_frame);
+
+    return DISPLAY_OK;
+}
+
+/**
+ * Show the next photo immediately, skipping ahead in the schedule.
+ *
+ * This backs the "next" button. It picks the event after the current one
+ * without changing the schedule itself.
+ */
+display_result_t display_task_show_next(void) {
+    size_t count = schedule_event_count();
+    if (count == 0) {
+        return DISPLAY_EMPTY;
+    }
+
+    const char *current = schedule_displayed_asset();
+
+    /* Find the current position and take the next one. */
+    size_t index = 0;
+    for (size_t i = 0; i < count; i++) {
+        const char *hash = schedule_asset_at(i);
+        if (hash != NULL && current != NULL && strcmp(hash, current) == 0) {
+            index = (i + 1) % count;
+            break;
+        }
+    }
+
+    const char *next = schedule_asset_at(index);
+    if (next == NULL) {
+        return DISPLAY_EMPTY;
+    }
+
+    return display_task_show_asset(next);
+}
+
+/**
+ * Power the panel down before sleeping.
+ */
+void display_task_prepare_sleep(void) {
+    if (s_panel_ready) {
+        epaper_enter_deepsleep();
+    }
+}

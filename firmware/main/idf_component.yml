@@ -1,0 +1,11 @@
+dependencies:
+  idf:
+    version: ">=5.3"
+
+  # The schedule and sync responses are parsed with cJSON. In ESP-IDF v6
+  # this is no longer part of the distribution, so it comes from the
+  # component manager.
+  espressif/cjson: "^1.7.7"
+
+  # The assets are gzip containers, which the firmware inflates with zlib.
+  espressif/zlib: "^1.3.1"

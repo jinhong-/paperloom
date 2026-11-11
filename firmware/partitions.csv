@@ -1,0 +1,8 @@
+# Name,   Type, SubType, Offset,  Size, Flags
+# The application is large because of the TLS and HTTP stacks; give it 2 MB.
+# The assets and the schedule live on the microSD card, so there is no need
+# for a large SPIFFS partition.
+nvs,      data, nvs,     0x9000,  0x5000,
+otadata,  data, ota,     0xe000,  0x2000,
+phy_init, data, phy,     0x10000, 0x1000,
+factory,  app,  factory, 0x20000, 0x200000,
