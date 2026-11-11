@@ -3,7 +3,9 @@
 CONFIG_IDF_TARGET="esp32s3"
 
 # --- Flash and partitioning -------------------------------------------
-CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+# The ESP32-S3 module on this board is the N16R8 variant: 16 MB of flash
+# and 8 MB of PSRAM.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
 CONFIG_PARTITION_TABLE_CUSTOM=y

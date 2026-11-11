@@ -131,19 +131,51 @@ Configuration is by environment variable:
 
 ```bash
 cd firmware
-.\build.ps1 build          # Windows
-./build.ps1 build          # elsewhere
+python build.py build          # build
+python build.py flash          # flash
+python build.py flash monitor  # flash and watch the log
+python build.py --clean build  # start from scratch
+```
+
+`build.py` runs `idf.py`. If the ESP-IDF environment is already active it
+uses it as-is; otherwise it locates the installation and the toolchain
+itself, so the build works on a machine where the environment is not
+permanently configured. It remembers the environment it used, because
+ESP-IDF refuses to continue when the Python interpreter changes.
+
+To use `idf.py` directly, activate the environment first:
+
+```bash
+. $IDF_PATH/export.sh          # POSIX
+. $IDF_PATH\export.ps1         # PowerShell
+idf.py build
 ```
 
 The build needs ESP-IDF v5.3 or newer; it was developed against v6.0.1.
-`build.ps1` locates the toolchain and the Python environment, so it works
-without a permanently configured shell.
 
-To flash and watch the logs:
+### The hardware
 
-```bash
-.\build.ps1 flash monitor
-```
+The ESP32-S3 module on this board is the **N16R8** variant: 16 MB of flash
+and 8 MB of PSRAM. The flash size matters: the partition table has two
+3 MB application slots so that an over-the-air update fits later.
+
+The panel is driven over plain SPI on SPI2, with the image split across two
+chip selects:
+
+| Signal | Pin | | Signal | Pin |
+|---|---|---|---|---|
+| CS0 | 18 | | BUSY | 7 |
+| CS1 | 17 | | RST | 6 |
+| CLK | 9 | | LOAD_SW | 45 |
+| MOSI | 41 | | SD CLK | 8 |
+| MISO | 40 | | SD MOSI/MISO | 3 / 5 |
+
+The microSD card has its own SPI bus on SPI3.
+
+Good Display's product page describes the panel interface as "QSPI", which
+is misleading: the *connector* is a 60-pin QSPI-style interface, but the
+MCU drives it with an ordinary SPI bus, as the vendor's own sample code
+does.
 
 ## Development tools
 

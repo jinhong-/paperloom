@@ -209,12 +209,38 @@ static void gpio_init(void) {
 }
 
 static void spi_add_device(void) {
+    /* The driver owns its SPI bus, so it initialises it here. The panel
+     * runs on SPI2; the microSD card has a bus of its own on SPI3, which
+     * storage.c sets up. */
+    spi_bus_config_t bus_config = {
+        .mosi_io_num = EPD_SPI_MOSI,
+        .miso_io_num = EPD_SPI_MISO,
+        .sclk_io_num = EPD_SPI_SCLK,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+        .max_transfer_sz = EPD_SPI_MAX_TRANSFER_BYTES,
+    };
+
+    esp_err_t err = spi_bus_initialize(g_cfg.spi_host, &bus_config, SPI_DMA_CH_AUTO);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        /* ESP_ERR_INVALID_STATE means the bus was already initialised,
+         * which is fine. Anything else is fatal: the panel would never
+         * receive an image. */
+        ESP_LOGE(TAG, "Failed to initialise the SPI bus: %s", esp_err_to_name(err));
+        abort();
+    }
+
     spi_device_interface_config_t devcfg = {
         .command_bits = 0,
         .clock_speed_hz = 10 * 1000 * 1000,
         .mode = 0,
         .spics_io_num = -1,
         .queue_size = 7,
+        /* Keep the chip select low for a few extra cycles after the
+         * transfer, so the panel does not miss the last bit when the
+         * propagation delay is shorter than the clock period. This is what
+         * the vendor's own sample does. */
+        .cs_ena_posttrans = 3,
     };
     ESP_ERROR_CHECK(spi_bus_add_device(g_cfg.spi_host, &devcfg, &s_spi));
 }

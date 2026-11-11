@@ -16,6 +16,10 @@ firmware/sdkconfig.old
 firmware/managed_components/
 firmware/dependencies.lock
 
+# The build script records the ESP-IDF environment it used, so that the
+# interpreter does not change between builds.
+firmware/.paperloom-env.json
+
 # Editors and OS
 .DS_Store
 .idea/
