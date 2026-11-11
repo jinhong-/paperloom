@@ -1,7 +1,23 @@
+# Node
 node_modules/
 dist/
+*.tsbuildinfo
+
+# Server runtime data (database, asset store)
 data/
 *.log
 .env
 .env.local
+
+# ESP-IDF build output
+firmware/build/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/managed_components/
+firmware/dependencies.lock
+
+# Editors and OS
 .DS_Store
+.idea/
+.vscode/
+*.swp
