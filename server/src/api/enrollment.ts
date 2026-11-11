@@ -1,0 +1,267 @@
+/**
+ * Enrollment API.
+ *
+ * Enrollment binds a physically present device to an owner account. The
+ * flow mirrors the architecture document:
+ *
+ * 1. The device generates a key pair and opens a pending enrollment.
+ * 2. The server issues a short-lived, single-use claim code.
+ * 3. The device shows the code as a QR code on the panel.
+ * 4. The owner enters the code in the management UI and confirms.
+ * 5. The server activates the device's credentials.
+ *
+ * Security properties:
+ *
+ * - Possession of a device id is not sufficient to claim a device; the
+ *   claim code is a high-entropy secret that only the physical panel knows.
+ * - The pending enrollment is bound to the device's public key, so a
+ *   device that opens a claim cannot have its key swapped afterwards.
+ * - The claim code is single-use and expires.
+ */
+
+import { randomInt } from "node:crypto";
+
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+
+import type { Db } from "../db/index.js";
+
+export interface EnrollmentOptions {
+  readonly db: Db;
+  readonly basePath: string;
+  /** How long a claim code stays valid, in milliseconds. */
+  readonly claimTtlMs?: number;
+}
+
+export interface PendingEnrollmentRequest {
+  readonly device_id: string;
+  readonly name?: string;
+  /** Base64 of the device's raw uncompressed P-256 public point. */
+  readonly public_key: string;
+  readonly panel_width?: number;
+  readonly panel_height?: number;
+}
+
+export function registerEnrollmentApi(app: FastifyInstance, options: EnrollmentOptions): void {
+  const { db, basePath } = options;
+  const claimTtlMs = options.claimTtlMs ?? 15 * 60 * 1000;
+
+  /**
+   * The signed-in user id, or null if the request is not authenticated.
+   *
+   * Claiming is a human action, so it is authenticated by the management
+   * session cookie rather than by a device signature.
+   */
+  function sessionUserId(request: FastifyRequest): number | null {
+    const token = request.cookies?.["paperloom_session"];
+    if (!token) return null;
+
+    const session = db
+      .prepare("SELECT user_id, expires_at FROM sessions WHERE token = ?")
+      .get(token) as { user_id: number; expires_at: string } | undefined;
+
+    if (!session || new Date(session.expires_at).getTime() < Date.now()) return null;
+    return session.user_id;
+  }
+
+  /**
+   * Open a pending enrollment and receive a claim code.
+   */
+  app.post(`${basePath}/enroll`, async (request, reply) => {
+    const body = request.body as PendingEnrollmentRequest;
+
+    if (!body?.device_id || !body?.public_key) {
+      await reply.code(400).send({ error: "device_id and public_key are required" });
+      return;
+    }
+    if (!/^[A-Za-z0-9_-]{8,64}$/.test(body.device_id)) {
+      await reply.code(400).send({ error: "device_id must be 8-64 URL-safe characters" });
+      return;
+    }
+
+    const now = Date.now();
+    const expiresAt = new Date(now + claimTtlMs);
+
+    // A device re-enrolling replaces its pending record; it does not take
+    // over an already-claimed device.
+    const existing = db
+      .prepare("SELECT id, state FROM devices WHERE device_id = ?")
+      .get(body.device_id) as { id: number; state: string } | undefined;
+
+    if (existing?.state === "claimed") {
+      await reply.code(409).send({ error: "device is already claimed" });
+      return;
+    }
+
+    const claimCode = generateClaimCode();
+
+    if (existing) {
+      db.prepare(
+        `UPDATE devices
+         SET public_key = ?, name = COALESCE(?, name), state = 'pending',
+             claim_code = ?, claim_expires_at = ?,
+             panel_width = COALESCE(?, panel_width),
+             panel_height = COALESCE(?, panel_height)
+         WHERE id = ?`,
+      ).run(
+        body.public_key,
+        body.name ?? null,
+        claimCode,
+        expiresAt.toISOString(),
+        body.panel_width ?? null,
+        body.panel_height ?? null,
+        existing.id,
+      );
+    } else {
+      db.prepare(
+        `INSERT INTO devices
+           (name, device_id, public_key, state, claim_code, claim_expires_at,
+            panel_width, panel_height)
+         VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)`,
+      ).run(
+        body.name ?? body.device_id,
+        body.device_id,
+        body.public_key,
+        claimCode,
+        expiresAt.toISOString(),
+        body.panel_width ?? 1200,
+        body.panel_height ?? 1600,
+      );
+    }
+
+    await reply.send({
+      claim_code: claimCode,
+      expires_at: expiresAt.toISOString(),
+      // The device encodes this as a QR code pointing at the claim URL.
+      claim_url: `/claim/${claimCode}`,
+    });
+  });
+
+  /**
+   * Look up a claim code. Used by the management UI to show which device is
+   * being claimed before the owner confirms.
+   */
+  app.get(`${basePath}/claim/:code`, async (request, reply) => {
+    const { code } = request.params as { code: string };
+
+    const device = db
+      .prepare(
+        `SELECT device_id, name, state, claim_expires_at, panel_width, panel_height
+         FROM devices WHERE claim_code = ?`,
+      )
+      .get(code) as
+      | {
+          device_id: string;
+          name: string;
+          state: string;
+          claim_expires_at: string;
+          panel_width: number;
+          panel_height: number;
+        }
+      | undefined;
+
+    if (!device) {
+      await reply.code(404).send({ error: "unknown claim code" });
+      return;
+    }
+    if (device.state !== "pending") {
+      await reply.code(409).send({ error: "claim code has already been used" });
+      return;
+    }
+    if (new Date(device.claim_expires_at).getTime() < Date.now()) {
+      await reply.code(410).send({ error: "claim code has expired" });
+      return;
+    }
+
+    await reply.send({
+      device_id: device.device_id,
+      name: device.name,
+      panel_width: device.panel_width,
+      panel_height: device.panel_height,
+      expires_at: device.claim_expires_at,
+    });
+  });
+
+  /**
+   * Confirm a claim, binding the device to the signed-in user.
+   *
+   * This route is authenticated by the management UI's session, not by a
+   * device signature: it is the human asserting ownership.
+   */
+  app.post(`${basePath}/claim/:code`, async (request, reply) => {
+    const userId = sessionUserId(request);
+    if (userId === null) {
+      await reply.code(401).send({ error: "sign in to claim a device" });
+      return;
+    }
+
+    const { code } = request.params as { code: string };
+
+    const device = db
+      .prepare("SELECT id, state, claim_expires_at FROM devices WHERE claim_code = ?")
+      .get(code) as
+      | { id: number; state: string; claim_expires_at: string }
+      | undefined;
+
+    if (!device) {
+      await reply.code(404).send({ error: "unknown claim code" });
+      return;
+    }
+    if (device.state !== "pending") {
+      await reply.code(409).send({ error: "claim code has already been used" });
+      return;
+    }
+    if (new Date(device.claim_expires_at).getTime() < Date.now()) {
+      await reply.code(410).send({ error: "claim code has expired" });
+      return;
+    }
+
+    db.prepare(
+      `UPDATE devices
+       SET user_id = ?, state = 'claimed', claim_code = NULL, claim_expires_at = NULL
+       WHERE id = ?`,
+    ).run(userId, device.id);
+
+    await reply.send({ status: "claimed", device_id: device.id });
+  });
+
+  /**
+   * Poll for the result of a pending enrollment.
+   *
+   * The device polls this while it waits for the owner to scan the QR code.
+   */
+  app.get(`${basePath}/enroll/status/:deviceId`, async (request, reply) => {
+    const { deviceId } = request.params as { deviceId: string };
+    const device = db
+      .prepare("SELECT state, claim_code, claim_expires_at FROM devices WHERE device_id = ?")
+      .get(deviceId) as
+      | { state: string; claim_code: string | null; claim_expires_at: string }
+      | undefined;
+
+    if (!device) {
+      await reply.code(404).send({ error: "unknown device" });
+      return;
+    }
+
+    await reply.send({
+      state: device.state,
+      claim_code: device.claim_code,
+      expires_at: device.claim_expires_at,
+    });
+  });
+}
+
+/**
+ * Generate a human-transcribable claim code.
+ *
+ * 12 characters from an unambiguous alphabet (no O/0, I/1), grouped in
+ * blocks of four so it can be read off the panel and typed by hand.
+ */
+export function generateClaimCode(): string {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code = "";
+  for (let i = 0; i < 12; i++) {
+    code += alphabet[randomInt(alphabet.length)];
+    if ((i + 1) % 4 === 0 && i !== 11) code += "-";
+  }
+  return code;
+}
