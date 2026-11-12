@@ -24,6 +24,7 @@
 #include "display_task.h"
 #include "power.h"
 #include "schedule.h"
+#include "setup_mode.h"
 #include "storage.h"
 #include "sync.h"
 #include "time.h"
@@ -94,13 +95,42 @@ static int64_t run_cycle(wake_reason_t reason) {
         /* The radio is only brought up when we actually need it. */
         if (board_wifi_connect() != ESP_OK) {
             ESP_LOGW(TAG, "Could not connect to Wi-Fi; continuing without a sync");
-        } else if (sync_perform(&now_ms) == SYNC_OK) {
-            /* The server may have replaced the schedule, so re-check. */
-            if (schedule_next_event(&due_event) == SCHEDULE_OK) {
-                display_due = due_event.at_ms <= now_ms;
-            }
         } else {
-            ESP_LOGW(TAG, "Sync failed; continuing with the cached schedule");
+            /* Anchor the clock before the first signed request. A device
+             * that has never synced has no absolute time, and the server
+             * rejects a request whose timestamp is outside its accepted
+             * window. */
+            if (!time_is_valid()) {
+                ESP_LOGI(TAG, "The clock is not anchored yet; asking the server for the time");
+                if (!sync_fetch_server_time()) {
+                    ESP_LOGW(TAG, "Could not get the time from the server");
+                }
+            }
+
+            /* Enrol if the server does not know us yet. The enrolment
+             * sends the public key and gets back a claim code, which the
+             * owner scans to make the frame theirs. */
+            if (sync_claim_code()[0] == '\0') {
+                char claim_code[32] = {0};
+                char claim_url[160] = {0};
+                if (sync_enrol(claim_code, sizeof(claim_code), claim_url, sizeof(claim_url))) {
+                    ESP_LOGI(TAG, "Enrolled with the server; the claim code is %s", claim_code);
+
+                    /* Show the claim code so the owner can scan it. */
+                    display_task_show_claim_screen(claim_code, claim_url);
+                } else {
+                    ESP_LOGW(TAG, "Could not enrol with the server");
+                }
+            }
+
+            if (sync_perform(&now_ms) == SYNC_OK) {
+                /* The server may have replaced the schedule, so re-check. */
+                if (schedule_next_event(&due_event) == SCHEDULE_OK) {
+                    display_due = due_event.at_ms <= now_ms;
+                }
+            } else {
+                ESP_LOGW(TAG, "Sync failed; continuing with the cached schedule");
+            }
         }
     }
 
@@ -195,6 +225,16 @@ void app_main(void) {
     ESP_LOGI(TAG, "Step: display");
     ESP_ERROR_CHECK(display_task_init());
     ESP_LOGI(TAG, "Step: ready");
+
+    /* A frame with no server URL cannot do anything useful, so it waits
+     * to be set up. The setup mode brings up an access point, shows the
+     * screen and serves the setup page. */
+    if (sync_server_url()[0] == '\0') {
+        ESP_LOGW(TAG, "No server URL is configured; entering setup mode");
+        setup_mode_run();
+        /* setup_mode_run does not return. */
+        return;
+    }
 
     wake_reason_t reason = detect_wake_reason();
     int64_t delay = run_cycle(reason);

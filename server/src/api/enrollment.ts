@@ -133,6 +133,11 @@ export function registerEnrollmentApi(app: FastifyInstance, options: EnrollmentO
       expires_at: expiresAt.toISOString(),
       // The device encodes this as a QR code pointing at the claim URL.
       claim_url: `/claim/${claimCode}`,
+      // The device's clock is not yet anchored to real time when it first
+      // enrols, so it cannot produce a timestamp the server would accept.
+      // The server's time here is what anchors it. Later requests carry a
+      // real timestamp and are checked normally.
+      server_time: new Date().toISOString(),
     });
   });
 

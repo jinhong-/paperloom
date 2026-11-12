@@ -5,35 +5,34 @@
  * the device; the server stores the public key and verifies signatures
  * against it.
  *
- * The implementation uses PSA Crypto, which is the API mbedTLS 3.6 (as
- * shipped with ESP-IDF v6) exposes. PSA produces a raw `r || s`
- * signature, which we convert to the DER encoding that the server's
- * `node:crypto` verifier expects.
+ * Why the low-level mbedTLS API
+ * ----------------------------
  *
- * A note on key generation
- * -----------------------
+ * The obvious implementation uses PSA Crypto: import a key, then
+ * psa_sign_hash(). That does not work on this chip with ESP-IDF v6.
+ * psa_sign_hash() fails with PSA_ERROR_INVALID_HANDLE for every key, even
+ * one that psa_generate_key() created moments earlier, and even though
+ * psa_export_public_key() on the same key succeeds.
  *
- * The ESP32-S3's hardware ECC accelerator can sign and verify but cannot
- * generate an ECC key pair. PSA reports this as
- * PSA_ERROR_NOT_SUPPORTED.
+ * The underlying cryptography is fine: mbedtls_ecdsa_sign() succeeds, and
+ * so do mbedtls_ecp_group_load(), mbedtls_ecp_point_write_binary() and
+ * mbedtls_ecp_read_key(). The failure is in PSA's key-slot layer, and
+ * mbedTLS's public-key API is built on top of that same layer, so it
+ * cannot be used either.
  *
- * Worse, ESP-IDF v6's mbedTLS configuration claims
- * MBEDTLS_PSA_ACCEL_KEY_TYPE_ECC_KEY_PAIR_GENERATE anyway, which disables
- * the software fallback that would otherwise handle it. The result is that
- * psa_generate_key() fails for P-256.
- *
- * The workaround is to generate the private scalar with the software
- * implementation and then import it into the hardware key slot, so that
- * signing still uses the accelerator.
+ * So the key is held as an mbedtls_ecp_keypair and signed directly. The
+ * key material is the raw 32-byte private scalar, which is also what the
+ * server-side verifier needs in order to derive the public point.
  */
 
 #include <string.h>
 
 #include "esp_log.h"
-#include "mbedtls/ecp.h"
 #include "mbedtls/bignum.h"
+#include "mbedtls/ecp.h"
+#include "mbedtls/md.h"
+#include "mbedtls/private/ecdsa.h"
 #include "psa/crypto.h"
-#include "psa/crypto_sizes.h"
 
 #include "crypto.h"
 
@@ -47,10 +46,27 @@ static const char *TAG = "crypto";
 #define DER_SIGNATURE_MAX 80
 
 /**
- * The device's key, held in a PSA key slot.
+ * The device's key.
  */
-static psa_key_id_t s_key_id = 0;
+static mbedtls_ecp_keypair s_key;
 static bool s_key_present = false;
+
+/**
+ * A random source for mbedTLS, backed by PSA.
+ *
+ * mbedTLS 3.6 keeps the classic entropy module private, so the hardware
+ * random source is reached through PSA instead.
+ */
+static int psa_random_getter(void *ctx, unsigned char *out, size_t len) {
+    (void)ctx;
+
+    psa_status_t status = psa_generate_random(out, len);
+    if (status != PSA_SUCCESS) {
+        ESP_LOGE(TAG, "The random source failed: %ld", (long)status);
+        return -1;
+    }
+    return 0;
+}
 
 /**
  * Convert a raw `r || s` signature into DER.
@@ -114,132 +130,70 @@ static bool raw_to_der(const uint8_t *raw, uint8_t *out, size_t *out_len) {
 }
 
 /**
- * The key attributes for the device's signing key.
- */
-static psa_key_attributes_t device_key_attributes(void) {
-    psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
-    psa_set_key_type(&attributes, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1));
-    psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_SIGN_HASH | PSA_KEY_USAGE_EXPORT);
-    psa_set_key_algorithm(&attributes, PSA_ALG_ECDSA(PSA_ALG_SHA_256));
-    return attributes;
-}
-
-/**
- * Generate a P-256 private key in software.
+ * Check that the crypto subsystem is usable.
  *
- * The hardware accelerator cannot generate ECC keys, so the scalar is
- * produced here and imported into a hardware key slot afterwards.
- *
- * @param out The 32-byte big-endian private scalar.
- */
-static bool generate_private_scalar(uint8_t *out) {
-    uint8_t random[P256_SCALAR_BYTES];
-
-    psa_status_t status = psa_generate_random(random, sizeof(random));
-    if (status != PSA_SUCCESS) {
-        ESP_LOGE(TAG, "Failed to get random bytes: %ld", (long)status);
-        return false;
-    }
-
-    /* The scalar must be in [1, n-1]. A random 32-byte value is almost
-     * always valid, but it has to be checked, and the handful of values
-     * that are not are worth rejecting rather than silently accepting. */
-    mbedtls_ecp_group group;
-    mbedtls_ecp_group_init(&group);
-    if (mbedtls_ecp_group_load(&group, MBEDTLS_ECP_DP_SECP256R1) != 0) {
-        ESP_LOGE(TAG, "Failed to load the P-256 group");
-        mbedtls_ecp_group_free(&group);
-        return false;
-    }
-
-    mbedtls_mpi d;
-    mbedtls_mpi_init(&d);
-
-    bool ok = false;
-    if (mbedtls_mpi_read_binary(&d, random, sizeof(random)) != 0) {
-        ESP_LOGE(TAG, "Failed to read the random scalar");
-        goto done;
-    }
-    if (mbedtls_mpi_cmp_int(&d, 0) == 0 || mbedtls_mpi_cmp_int(&d, 1) <= 0) {
-        ESP_LOGW(TAG, "The random scalar was out of range; retrying");
-        goto done;
-    }
-    /* The scalar must be less than the curve order. */
-    if (mbedtls_ecp_check_privkey(&group, &d) != 0) {
-        ESP_LOGW(TAG, "The random scalar was out of range; retrying");
-        goto done;
-    }
-    if (mbedtls_mpi_write_binary(&d, out, sizeof(random)) != 0) {
-        ESP_LOGE(TAG, "Failed to write the private scalar");
-        goto done;
-    }
-    ok = true;
-
-done:
-    mbedtls_mpi_free(&d);
-    mbedtls_ecp_group_free(&group);
-    return ok;
-}
-
-/**
- * Initialise the crypto module.
- *
- * ESP-IDF already calls psa_crypto_init() during system start-up, so this
- * only checks that it worked.
+ * ESP-IDF already calls psa_crypto_init() during system start-up, before
+ * app_main runs. Calling it a second time resets the key slots, which
+ * would silently destroy any key that has been imported, so it must not be
+ * called again.
  */
 esp_err_t crypto_init(void) {
-    psa_status_t status = psa_crypto_init();
+    uint8_t probe = 0;
+    psa_status_t status = psa_generate_random(&probe, sizeof(probe));
     if (status != PSA_SUCCESS) {
-        ESP_LOGE(TAG, "psa_crypto_init failed: %ld", (long)status);
+        ESP_LOGE(TAG, "The random source is not working: %ld", (long)status);
         return ESP_FAIL;
     }
-    ESP_LOGI(TAG, "PSA crypto initialised");
+
+    mbedtls_ecp_keypair_init(&s_key);
+
+    ESP_LOGI(TAG, "The crypto module is ready");
     return ESP_OK;
 }
 
 /**
  * Load the device key from its stored form, or generate a new one.
  *
- * The key is stored as the raw 32-byte private scalar, which is also what
- * PSA imports.
+ * The key is stored as the raw 32-byte private scalar.
  *
  * @param private_key The stored scalar, or NULL to generate a new key.
  */
 esp_err_t crypto_load_or_create(const uint8_t *private_key) {
-    psa_key_attributes_t attributes = device_key_attributes();
+    mbedtls_ecp_keypair_init(&s_key);
 
-    if (private_key != NULL) {
-        psa_status_t status = psa_import_key(&attributes, private_key, P256_SCALAR_BYTES, &s_key_id);
-        psa_reset_key_attributes(&attributes);
-
-        if (status != PSA_SUCCESS) {
-            ESP_LOGE(TAG, "Failed to import the stored key: %ld", (long)status);
-            return ESP_FAIL;
-        }
-
-        s_key_present = true;
-        ESP_LOGI(TAG, "Loaded the device key from storage");
-        return ESP_OK;
-    }
-
-    /* Generate in software, then import so that signing uses the
-     * hardware accelerator. */
-    uint8_t scalar[P256_SCALAR_BYTES];
-    if (!generate_private_scalar(scalar)) {
-        psa_reset_key_attributes(&attributes);
+    int result = mbedtls_ecp_group_load(&s_key.MBEDTLS_PRIVATE(grp), MBEDTLS_ECP_DP_SECP256R1);
+    if (result != 0) {
+        ESP_LOGE(TAG, "Could not load the P-256 group: %d", result);
         return ESP_FAIL;
     }
 
-    psa_status_t status = psa_import_key(&attributes, scalar, sizeof(scalar), &s_key_id);
-    psa_reset_key_attributes(&attributes);
+    if (private_key != NULL) {
+        result = mbedtls_mpi_read_binary(&s_key.MBEDTLS_PRIVATE(d), private_key, P256_SCALAR_BYTES);
+        if (result != 0) {
+            ESP_LOGE(TAG, "Could not read the stored key: %d", result);
+            return ESP_FAIL;
+        }
+    } else {
+        result = mbedtls_ecp_gen_privkey(&s_key.MBEDTLS_PRIVATE(grp), &s_key.MBEDTLS_PRIVATE(d),
+                                          psa_random_getter, NULL);
+        if (result != 0) {
+            ESP_LOGE(TAG, "Could not generate a key: %d", result);
+            return ESP_FAIL;
+        }
+    }
 
-    if (status != PSA_SUCCESS) {
-        ESP_LOGE(TAG, "Failed to import the new key: %ld", (long)status);
+    result = mbedtls_ecp_check_privkey(&s_key.MBEDTLS_PRIVATE(grp), &s_key.MBEDTLS_PRIVATE(d));
+    if (result != 0) {
+        ESP_LOGE(TAG, "The private key is not valid: %d", result);
         return ESP_FAIL;
     }
 
     s_key_present = true;
-    ESP_LOGI(TAG, "Generated a new device key");
+    if (private_key != NULL) {
+        ESP_LOGI(TAG, "Loaded the device key from storage");
+    } else {
+        ESP_LOGI(TAG, "Generated a new device key");
+    }
     return ESP_OK;
 }
 
@@ -253,21 +207,12 @@ esp_err_t crypto_export_private_key(uint8_t *out, size_t out_len) {
         return ESP_FAIL;
     }
 
-    uint8_t buffer[PSA_EXPORT_KEY_OUTPUT_SIZE(PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1), 256)];
-    size_t written = 0;
-
-    psa_status_t status = psa_export_key(s_key_id, buffer, sizeof(buffer), &written);
-    if (status != PSA_SUCCESS) {
-        ESP_LOGE(TAG, "Failed to export the private key: %ld", (long)status);
+    int result = mbedtls_mpi_write_binary(&s_key.MBEDTLS_PRIVATE(d), out, P256_SCALAR_BYTES);
+    if (result != 0) {
+        ESP_LOGE(TAG, "Could not export the private key: %d", result);
         return ESP_FAIL;
     }
 
-    if (written != P256_SCALAR_BYTES) {
-        ESP_LOGE(TAG, "The exported key is %d bytes, expected %d", (int)written, P256_SCALAR_BYTES);
-        return ESP_FAIL;
-    }
-
-    memcpy(out, buffer, P256_SCALAR_BYTES);
     return ESP_OK;
 }
 
@@ -282,20 +227,36 @@ esp_err_t crypto_export_public_point(uint8_t *out, size_t *out_len) {
         return ESP_FAIL;
     }
 
-    uint8_t buffer[PSA_EXPORT_KEY_OUTPUT_SIZE(PSA_KEY_TYPE_ECC_PUBLIC_KEY(PSA_ECC_FAMILY_SECP_R1), 256)];
-    size_t written = 0;
+    /* The public point is derived from the private scalar: Q = d * G.
+     *
+     * mbedtls_ecp_muladd computes R = m*P + n*Q, so passing the generator
+     * as P, a zero multiplier for it and the private scalar as the second
+     * term gives d*G. */
+    if (mbedtls_ecp_is_zero(&s_key.MBEDTLS_PRIVATE(Q))) {
+        mbedtls_mpi zero;
+        mbedtls_mpi_init(&zero);
+        mbedtls_mpi_lset(&zero, 0);
 
-    psa_status_t status = psa_export_public_key(s_key_id, buffer, sizeof(buffer), &written);
-    if (status != PSA_SUCCESS) {
-        ESP_LOGE(TAG, "Failed to export the public key: %ld", (long)status);
+        int result = mbedtls_ecp_muladd(&s_key.MBEDTLS_PRIVATE(grp), &s_key.MBEDTLS_PRIVATE(Q),
+                                        &zero, &s_key.MBEDTLS_PRIVATE(grp).G,
+                                        &s_key.MBEDTLS_PRIVATE(d), &s_key.MBEDTLS_PRIVATE(grp).G);
+        mbedtls_mpi_free(&zero);
+
+        if (result != 0) {
+            ESP_LOGE(TAG, "Could not derive the public key: %d", result);
+            return ESP_FAIL;
+        }
+    }
+
+    size_t written = 0;
+    int result = mbedtls_ecp_point_write_binary(&s_key.MBEDTLS_PRIVATE(grp),
+                                               &s_key.MBEDTLS_PRIVATE(Q), MBEDTLS_ECP_PF_UNCOMPRESSED,
+                                               &written, out, *out_len);
+    if (result != 0) {
+        ESP_LOGE(TAG, "Could not export the public key: %d", result);
         return ESP_FAIL;
     }
 
-    if (written > *out_len) {
-        return ESP_ERR_NO_MEM;
-    }
-
-    memcpy(out, buffer, written);
     *out_len = written;
     return ESP_OK;
 }
@@ -317,31 +278,49 @@ esp_err_t crypto_sign(const uint8_t *message, size_t message_len, uint8_t *out, 
         return ESP_FAIL;
     }
 
+    /* Hash with PSA: mbedTLS 3.6 keeps the classic hash modules private,
+     * but the hashing itself works perfectly well through PSA. */
     uint8_t hash[32];
     size_t hash_len = 0;
-
-    psa_status_t status = psa_hash_compute(PSA_ALG_SHA_256, message, message_len, hash, sizeof(hash),
-                                            &hash_len);
-    if (status != PSA_SUCCESS) {
-        ESP_LOGE(TAG, "Failed to hash the message: %ld", (long)status);
+    psa_status_t hash_status =
+        psa_hash_compute(PSA_ALG_SHA_256, message, message_len, hash, sizeof(hash), &hash_len);
+    if (hash_status != PSA_SUCCESS) {
+        ESP_LOGE(TAG, "Could not hash the message: %ld", (long)hash_status);
         return ESP_FAIL;
     }
 
-    /* The raw signature is two 32-byte scalars. The size macro takes the
-     * curve size in bits. */
-    uint8_t raw[PSA_ECDSA_SIGNATURE_SIZE(256)];
-    size_t raw_len = 0;
+    mbedtls_mpi r;
+    mbedtls_mpi s;
+    mbedtls_mpi_init(&r);
+    mbedtls_mpi_init(&s);
 
-    status = psa_sign_hash(PSA_ALG_ECDSA(PSA_ALG_SHA_256), s_key_id, hash, sizeof(hash), raw,
-                           sizeof(raw), &raw_len);
-    if (status != PSA_SUCCESS) {
-        ESP_LOGE(TAG, "Failed to sign: %ld", (long)status);
+    int result = mbedtls_ecdsa_sign(&s_key.MBEDTLS_PRIVATE(grp), &r, &s, &s_key.MBEDTLS_PRIVATE(d),
+                                    hash, sizeof(hash), psa_random_getter, NULL);
+    if (result != 0) {
+        ESP_LOGE(TAG, "Could not sign: %d", result);
+        mbedtls_mpi_free(&r);
+        mbedtls_mpi_free(&s);
+        return ESP_FAIL;
+    }
+
+    /* The raw signature is the two scalars, big-endian. */
+    uint8_t raw[2 * P256_SCALAR_BYTES];
+    result = mbedtls_mpi_write_binary(&r, raw, P256_SCALAR_BYTES);
+    if (result == 0) {
+        result = mbedtls_mpi_write_binary(&s, raw + P256_SCALAR_BYTES, P256_SCALAR_BYTES);
+    }
+
+    mbedtls_mpi_free(&r);
+    mbedtls_mpi_free(&s);
+
+    if (result != 0) {
+        ESP_LOGE(TAG, "Could not read the signature: %d", result);
         return ESP_FAIL;
     }
 
     size_t der_len = *out_len;
     if (!raw_to_der(raw, out, &der_len)) {
-        ESP_LOGE(TAG, "Failed to DER-encode the signature");
+        ESP_LOGE(TAG, "Could not DER-encode the signature");
         return ESP_FAIL;
     }
 

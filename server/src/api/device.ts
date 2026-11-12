@@ -16,6 +16,7 @@ import {
   HEADER_TIMESTAMP,
   MAX_CLOCK_SKEW_MS,
   NONCE_TTL_MS,
+  canonicalString,
   publicKeyFromBase64,
   verifyRequest,
 } from "../auth/signing.js";
@@ -128,6 +129,10 @@ export function registerDeviceApi(app: FastifyInstance, options: DeviceApiOption
 
     const skew = Math.abs(Date.now() - timestamp);
     if (skew > MAX_CLOCK_SKEW_MS) {
+      request.log.warn(
+        { deviceId, timestamp, now: Date.now(), skew },
+        "the request timestamp is outside the accepted window",
+      );
       await reply.code(401).send({ error: "timestamp outside accepted window" });
       return null;
     }
@@ -139,6 +144,10 @@ export function registerDeviceApi(app: FastifyInstance, options: DeviceApiOption
       | undefined;
 
     if (!device || device.state !== "claimed" || !device.public_key) {
+      request.log.warn(
+        { deviceId, state: device?.state ?? "(unknown)", hasKey: !!device?.public_key },
+        "the device is not allowed to sync",
+      );
       await reply.code(401).send({ error: "unknown or unclaimed device" });
       return null;
     }
@@ -160,6 +169,19 @@ export function registerDeviceApi(app: FastifyInstance, options: DeviceApiOption
       publicKeyPem,
     );
     if (!valid) {
+      request.log.warn(
+        {
+          deviceId,
+          path,
+          timestamp,
+          nonce,
+          bodyLength: body.length,
+          canonical: canonicalString(
+            { method: request.method, path, timestamp, nonce, deviceId, body },
+          ),
+        },
+        "the signature did not verify",
+      );
       await reply.code(401).send({ error: "invalid signature" });
       return null;
     }
@@ -194,6 +216,21 @@ export function registerDeviceApi(app: FastifyInstance, options: DeviceApiOption
 
     return { id: device.id, deviceId: device.device_id };
   }
+
+  /**
+   * The server's current time.
+   *
+   * A device that has never synced has no absolute time, so the timestamp
+   * it puts in a request would be meaningless and the server would reject
+   * the request as being outside the accepted window. This endpoint lets
+   * the device anchor its clock before it makes any signed request.
+   *
+   * It is deliberately unsigned and returns nothing but the time, so it
+   * cannot be used to do anything on the device's behalf.
+   */
+  app.get(`${basePath}/time`, async (_request, reply) => {
+    await reply.send({ server_time: new Date().toISOString() });
+  });
 
   app.post(`${basePath}/sync`, async (request, reply) => {
     const auth = await authenticate(request, reply);

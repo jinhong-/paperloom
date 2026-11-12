@@ -36,6 +36,62 @@ bool sync_is_configured(void);
 esp_err_t sync_configure(const char *server_url, const char *device_id);
 
 /**
+ * The server URL that is stored, or an empty string.
+ */
+const char *sync_server_url(void);
+
+/**
+ * The device id that is stored, or an empty string.
+ */
+const char *sync_device_id(void);
+
+/**
+ * Store the server URL.
+ */
+esp_err_t sync_set_server_url(const char *url);
+
+/**
+ * Ensure the device has an id, generating one if it does not.
+ */
+esp_err_t sync_ensure_device_id(void);
+
+/**
+ * Fetch the server's time and anchor the clock to it.
+ *
+ * A device that has never synced has no absolute time, and the server
+ * rejects a request whose timestamp is outside its accepted window. This
+ * makes the first signed request possible.
+ *
+ * @return true if the clock was anchored.
+ */
+bool sync_fetch_server_time(void);
+
+/**
+ * Enrol with the server.
+ *
+ * The device sends its public key and receives a claim code, which the
+ * owner scans to make the frame theirs.
+ *
+ * @param claim_code     The code that was issued.
+ * @param claim_code_len The size of that buffer.
+ * @param claim_url      The URL the claim QR code should point at.
+ * @param claim_url_len  The size of that buffer.
+ *
+ * @return true on success.
+ */
+bool sync_enrol(char *claim_code, size_t claim_code_len, char *claim_url, size_t claim_url_len);
+
+/**
+ * The claim code from the last enrolment.
+ */
+const char *sync_claim_code(void);
+
+/**
+ * The claim URL from the last enrolment.
+ */
+const char *sync_claim_url(void);
+
+/**
  * The device's public key, base64url encoded as the raw point.
  *
  * Used during enrollment.

@@ -19,7 +19,7 @@ extern "C" {
 #define CRYPTO_PRIVATE_KEY_BYTES 32
 
 /**
- * Initialise the PSA crypto subsystem.
+ * Check that the crypto subsystem is usable.
  */
 esp_err_t crypto_init(void);
 

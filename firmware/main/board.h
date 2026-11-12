@@ -62,6 +62,24 @@ bool board_wifi_connected(void);
 void board_wifi_stop(void);
 
 /**
+ * Start a Wi-Fi access point, for setup.
+ *
+ * @param ssid     The network name.
+ * @param password The passphrase, at least eight characters.
+ */
+esp_err_t board_wifi_start_ap(const char *ssid, const char *password);
+
+/**
+ * Stop the access point.
+ */
+void board_wifi_stop_ap(void);
+
+/**
+ * The access point's address.
+ */
+const char *board_ap_address(void);
+
+/**
  * Store Wi-Fi credentials in NVS.
  */
 esp_err_t board_set_wifi_credentials(const char *ssid, const char *password);

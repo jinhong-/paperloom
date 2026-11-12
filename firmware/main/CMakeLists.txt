@@ -10,9 +10,15 @@ idf_component_register(
         "board.c"
         "crypto.c"
         "display_task.c"
+        "drawing.c"
         "epaper_driver.c"
+        "font_ascii.c"
         "power.c"
+        "qr.c"
         "schedule.c"
+        "setup_mode.c"
+        "setup_screen.c"
+        "setup_server.c"
         "storage.c"
         "sync.c"
         "time.c"
@@ -30,8 +36,10 @@ idf_component_register(
         esp_driver_sdspi
         esp_driver_spi
         esp_http_client
+        esp_http_server
         cjson
         zlib
         mbedtls
+        qrcode
         esp_hw_support
 )

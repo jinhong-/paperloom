@@ -9,6 +9,8 @@
 
 #include "esp_err.h"
 
+#include "setup_screen.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -33,6 +35,26 @@ display_result_t display_task_show_asset(const char *asset_hash);
  * Show the next photo in the schedule.
  */
 display_result_t display_task_show_next(void);
+
+/**
+ * Show the setup screen.
+ *
+ * @param info The access point's details.
+ */
+display_result_t display_task_show_setup_screen(const setup_screen_info_t *info);
+
+/**
+ * Show a screen explaining that setup failed.
+ */
+display_result_t display_task_show_setup_error(const char *message);
+
+/**
+ * Show the claim screen.
+ *
+ * @param claim_code The code to enter by hand.
+ * @param claim_url  The URL the QR code points at.
+ */
+display_result_t display_task_show_claim_screen(const char *claim_code, const char *claim_url);
 
 /**
  * Power the panel down before sleeping.

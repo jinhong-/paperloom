@@ -292,7 +292,14 @@ esp_err_t sync_init(void) {
     nvs_read_string(NVS_KEY_DEVICE_ID, s_device_id, sizeof(s_device_id));
     nvs_read_string(NVS_KEY_NEXT_SYNC, s_next_sync_at, sizeof(s_next_sync_at));
 
-    esp_err_t err = crypto_init();
+    /* The device needs an id even before it is set up, because the id is
+     * part of the request signature. */
+    esp_err_t err = sync_ensure_device_id();
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = crypto_init();
     if (err != ESP_OK) {
         return err;
     }
@@ -301,7 +308,6 @@ esp_err_t sync_init(void) {
     if (err != ESP_OK) {
         return err;
     }
-
     if (s_server_url[0] == '\0') {
         ESP_LOGW(TAG, "No server URL configured; the device is not set up");
     }
@@ -311,6 +317,182 @@ esp_err_t sync_init(void) {
 
 bool sync_is_configured(void) {
     return s_server_url[0] != '\0' && s_device_id[0] != '\0';
+}
+
+/**
+ * The claim code from the last enrolment, if there was one.
+ */
+static char s_claim_code[32] = {0};
+
+/**
+ * The claim URL from the last enrolment.
+ */
+static char s_claim_url[160] = {0};
+
+/* Defined further down, but needed by the enrolment code above. */
+static esp_err_t signed_request(const char *method, const char *path, const char *body,
+                                 size_t body_len, char *out, size_t *out_len);
+
+/**
+ * Enrol with the server.
+ *
+ * The device sends its public key and gets a claim code back, which the
+ * owner scans to make the frame theirs.
+ *
+ * @param claim_code The code that was issued, if any.
+ * @param claim_url  The URL the claim QR code should point at.
+ *
+ * @return true on success.
+ */
+bool sync_enrol(char *claim_code, size_t claim_code_len, char *claim_url, size_t claim_url_len) {
+    if (!sync_is_configured()) {
+        ESP_LOGW(TAG, "Cannot enrol: the server URL is not set");
+        return false;
+    }
+
+    char public_key[128];
+    if (!export_public_key(public_key, sizeof(public_key))) {
+        ESP_LOGE(TAG, "Could not export the public key");
+        return false;
+    }
+
+    char body[512];
+    int length = snprintf(body, sizeof(body),
+                          "{\"device_id\":\"%s\",\"name\":\"Paperloom\","
+                          "\"public_key\":\"%s\",\"panel_width\":%d,\"panel_height\":%d}",
+                          s_device_id, public_key, PANEL_WIDTH, PANEL_HEIGHT);
+
+    char response[2048];
+    size_t response_len = sizeof(response);
+
+    char path[64];
+    snprintf(path, sizeof(path), "/api/device/enroll");
+
+    if (signed_request("POST", path, body, (size_t)length, response, &response_len) != SYNC_OK) {
+        return false;
+    }
+
+    cJSON *root = cJSON_Parse(response);
+    if (root == NULL) {
+        ESP_LOGE(TAG, "Could not parse the enrolment response: %s", response);
+        return false;
+    }
+
+    cJSON *code = cJSON_GetObjectItem(root, "claim_code");
+    cJSON *url = cJSON_GetObjectItem(root, "claim_url");
+
+    bool ok = false;
+    if (cJSON_IsString(code) && code->valuestring != NULL) {
+        snprintf(s_claim_code, sizeof(s_claim_code), "%s", code->valuestring);
+        if (claim_code != NULL && claim_code_len > 0) {
+            snprintf(claim_code, claim_code_len, "%s", s_claim_code);
+        }
+        ok = true;
+    }
+
+    if (cJSON_IsString(url) && url->valuestring != NULL) {
+        snprintf(s_claim_url, sizeof(s_claim_url), "%s", url->valuestring);
+        if (claim_url != NULL && claim_url_len > 0) {
+            snprintf(claim_url, claim_url_len, "%s", s_claim_url);
+        }
+    }
+
+    /* Take the server's time. A device that has never synced has no
+     * absolute time, so the timestamp it puts in a request would be
+     * meaningless and the server would reject it. The enrolment response
+     * carries the server's time, which anchors the clock; every later
+     * request then carries a usable timestamp.
+     *
+     * This has to happen before the first sync, which is why the clock is
+     * corrected here rather than from the sync response. */
+    cJSON *server_time = cJSON_GetObjectItem(root, "server_time");
+    if (cJSON_IsString(server_time) && server_time->valuestring != NULL) {
+        int64_t server_ms = 0;
+        if (parse_iso8601_ms(server_time->valuestring, &server_ms) == ESP_OK) {
+            time_set_from_server(server_ms);
+            ESP_LOGI(TAG, "The clock is now anchored to the server's time");
+        }
+    }
+
+    cJSON_Delete(root);
+
+    if (ok) {
+        ESP_LOGI(TAG, "Enrolled; the claim code is %s", s_claim_code);
+    }
+    return ok;
+}
+
+/**
+ * The claim code from the last enrolment.
+ */
+const char *sync_claim_code(void) {
+    return s_claim_code;
+}
+
+/**
+ * The claim URL from the last enrolment.
+ */
+const char *sync_claim_url(void) {
+    return s_claim_url;
+}
+
+/**
+ * Fetch the server's time and anchor the clock to it.
+ *
+ * A device that has never synced has no absolute time: the RTC comes up
+ * with a meaningless value, and the timestamp in a signed request would be
+ * rejected by the server. Fetching the time first is what makes the first
+ * request possible.
+ *
+ * @return true if the clock was anchored.
+ */
+bool sync_fetch_server_time(void) {
+    if (!sync_is_configured()) {
+        return false;
+    }
+
+    esp_http_client_config_t config = {
+        .url = s_server_url,
+        .method = HTTP_METHOD_GET,
+        .timeout_ms = SYNC_HTTP_TIMEOUT_MS,
+        .cert_pem = board_ca_certificate(),
+        .use_global_ca_store = board_ca_certificate() == NULL,
+    };
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == NULL) {
+        return false;
+    }
+
+    char response[256];
+    size_t received = 0;
+    bool ok = false;
+
+    esp_err_t err = esp_http_client_open(client, 0);
+    if (err == ESP_OK) {
+        esp_http_client_fetch_headers(client);
+        int read = esp_http_client_read_response(client, response, sizeof(response) - 1);
+        if (read > 0) {
+            received = (size_t)read;
+            response[received] = '\0';
+
+            cJSON *root = cJSON_Parse(response);
+            if (root != NULL) {
+                cJSON *server_time = cJSON_GetObjectItem(root, "server_time");
+                int64_t server_ms = 0;
+                if (cJSON_IsString(server_time) && server_time->valuestring != NULL &&
+                    parse_iso8601_ms(server_time->valuestring, &server_ms) == ESP_OK) {
+                    time_set_from_server(server_ms);
+                    ok = true;
+                }
+                cJSON_Delete(root);
+            }
+        }
+        esp_http_client_close(client);
+    }
+
+    esp_http_client_cleanup(client);
+    return ok;
 }
 
 /**
@@ -325,6 +507,61 @@ esp_err_t sync_configure(const char *server_url, const char *device_id) {
         return ESP_FAIL;
     }
 
+    return ESP_OK;
+}
+
+/**
+ * The server URL that is stored, or an empty string.
+ */
+const char *sync_server_url(void) {
+    return s_server_url;
+}
+
+/**
+ * The device id that is stored, or an empty string.
+ */
+const char *sync_device_id(void) {
+    return s_device_id;
+}
+
+/**
+ * Store the server URL.
+ */
+esp_err_t sync_set_server_url(const char *url) {
+    snprintf(s_server_url, sizeof(s_server_url), "%s", url);
+    if (!nvs_write_string(NVS_KEY_SERVER_URL, s_server_url)) {
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
+/**
+ * Ensure the device has an id, generating one if it does not.
+ *
+ * The id is what the server knows the frame by. It is generated on the
+ * frame rather than by the server so that the two can never disagree
+ * about it.
+ */
+esp_err_t sync_ensure_device_id(void) {
+    if (s_device_id[0] != '\0') {
+        return ESP_OK;
+    }
+
+    uint8_t random[6];
+    esp_fill_random(random, sizeof(random));
+
+    char id[32];
+    int offset = snprintf(id, sizeof(id), "frame-");
+    for (size_t i = 0; i < sizeof(random) && offset < (int)sizeof(id) - 3; i++) {
+        offset += snprintf(id + offset, sizeof(id) - (size_t)offset, "%02x", random[i]);
+    }
+
+    snprintf(s_device_id, sizeof(s_device_id), "%s", id);
+    if (!nvs_write_string(NVS_KEY_DEVICE_ID, s_device_id)) {
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "The device id is %s", s_device_id);
     return ESP_OK;
 }
 
@@ -392,7 +629,7 @@ bool sync_next_wake(const int64_t *now_ms, int64_t *wake_ms) {
  * @param out_len  The buffer size on entry, the response length on exit.
  */
 static esp_err_t signed_request(const char *method, const char *path, const char *body,
-                                 char *out, size_t *out_len) {
+                                 size_t body_len, char *out, size_t *out_len) {
     char url[512];
     snprintf(url, sizeof(url), "%s%s", s_server_url, path);
 
@@ -404,7 +641,7 @@ static esp_err_t signed_request(const char *method, const char *path, const char
     int64_t timestamp = now_ms;
 
     char body_digest[65];
-    sha256_hex((const uint8_t *)(body ? body : ""), body ? strlen(body) : 0, body_digest);
+    sha256_hex((const uint8_t *)(body ? body : ""), body ? body_len : 0, body_digest);
 
     char canonical[1024];
     build_canonical_string(method, path, timestamp, nonce, s_device_id, body_digest, canonical,
@@ -437,27 +674,50 @@ static esp_err_t signed_request(const char *method, const char *path, const char
     esp_http_client_set_header(client, "X-Paperloom-Nonce", nonce);
     esp_http_client_set_header(client, "X-Paperloom-Signature", signature);
 
-    if (body != NULL && body[0] != '\0') {
-        esp_http_client_set_post_field(client, body, (int)strlen(body));
-    }
-
-    esp_err_t err = esp_http_client_perform(client);
+    /* The request has to be sent, and the response read, in a specific
+     * order: open the connection with the length of the body, write the
+     * body, read the response headers, then read the response body.
+     *
+     * esp_http_client_perform() does the whole exchange at once and
+     * consumes the body, so it cannot be used when the response is
+     * needed. The device needs the response: it carries the claim code
+     * and the schedule.
+     */
+    size_t write_len = (body != NULL && body[0] != '\0') ? body_len : 0;
+    esp_err_t err = esp_http_client_open(client, (int)write_len);
 
     int status = 0;
-    if (err == ESP_OK) {
-        status = esp_http_client_get_status_code(client);
-        int total = esp_http_client_fetch_headers(client);
-        int received = 0;
-        while (total > 0) {
-            int len = esp_http_client_read(client, (char *)out + received, total);
-            if (len <= 0) {
-                break;
+    size_t received = 0;
+    size_t capacity = *out_len;
+
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Could not open the connection: %s", esp_err_to_name(err));
+    } else {
+        if (write_len > 0) {
+            int written = esp_http_client_write(client, body, (int)write_len);
+            if (written < 0) {
+                ESP_LOGW(TAG, "Could not write the request body");
             }
-            received += len;
-            total -= len;
         }
-        *out_len = (size_t)received;
-        out[received] = '\0';
+
+        int64_t expected = esp_http_client_fetch_headers(client);
+        if (expected < 0) {
+            ESP_LOGW(TAG, "Could not read the response headers");
+        } else {
+            int read = esp_http_client_read_response(client, out, (int)capacity);
+            if (read < 0) {
+                ESP_LOGW(TAG, "Could not read the response");
+            } else {
+                received = (size_t)read;
+                if (received < capacity) {
+                    out[received] = '\0';
+                }
+                *out_len = received;
+            }
+        }
+
+        status = esp_http_client_get_status_code(client);
+        esp_http_client_close(client);
     }
 
     esp_http_client_cleanup(client);
@@ -604,7 +864,8 @@ sync_result_t sync_perform(const int64_t *now_ms) {
     }
 
     size_t response_len = 32 * 1024;
-    esp_err_t err = signed_request("POST", "/api/device/sync", body, response, &response_len);
+    esp_err_t err = signed_request("POST", "/api/device/sync", body, body_len, response,
+                                   &response_len);
     free(body);
 
     if (err != ESP_OK) {
@@ -755,25 +1016,22 @@ sync_result_t sync_download_asset(const char *hash) {
     esp_http_client_set_header(client, "X-Paperloom-Nonce", nonce);
     esp_http_client_set_header(client, "X-Paperloom-Signature", signature);
 
-    esp_err_t perform = esp_http_client_perform(client);
+    /* The body has to be read between opening the connection and closing
+     * it: esp_http_client_perform() consumes it. */
+    esp_err_t perform = esp_http_client_open(client, 0);
     if (perform != ESP_OK) {
-        ESP_LOGW(TAG, "Download of %s failed", hash);
+        ESP_LOGW(TAG, "Could not open the connection for %s", hash);
         esp_http_client_cleanup(client);
         storage_abort_staging(staged_path);
         return SYNC_ERROR;
     }
 
-    int status = esp_http_client_get_status_code(client);
-    if (status != 200) {
-        ESP_LOGW(TAG, "Download of %s returned %d", hash, status);
-        esp_http_client_cleanup(client);
-        storage_abort_staging(staged_path);
-        return SYNC_ERROR;
-    }
+    int64_t expected = esp_http_client_fetch_headers(client);
 
     /* Stream the body to the staging file. */
     FILE *f = fopen(staged_path, "wb");
     if (f == NULL) {
+        esp_http_client_close(client);
         esp_http_client_cleanup(client);
         storage_abort_staging(staged_path);
         return SYNC_ERROR;
@@ -790,18 +1048,32 @@ sync_result_t sync_download_asset(const char *hash) {
         if (total > SYNC_MAX_ASSET_BYTES) {
             ESP_LOGW(TAG, "Asset %s is too large", hash);
             fclose(f);
+            esp_http_client_close(client);
             esp_http_client_cleanup(client);
             storage_abort_staging(staged_path);
             return SYNC_ERROR;
         }
         fwrite(buffer, 1, len, f);
+
+        if (expected > 0 && total >= expected) {
+            break;
+        }
     }
 
     fflush(f);
     fsync(fileno(f));
     fclose(f);
 
+    esp_http_client_close(client);
+
+    int status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
+
+    if (status != 200) {
+        ESP_LOGW(TAG, "Download of %s returned %d", hash, status);
+        storage_abort_staging(staged_path);
+        return SYNC_ERROR;
+    }
 
     /* Verify the hash. The asset's identity is its content, so a mismatch
      * means the download is unusable. The file is re-read to compute it,

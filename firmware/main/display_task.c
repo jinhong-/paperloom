@@ -21,6 +21,7 @@
 #include "display_task.h"
 #include "epaper.h"
 #include "schedule.h"
+#include "setup_screen.h"
 #include "storage.h"
 #include "sync.h"
 
@@ -192,6 +193,50 @@ display_result_t display_task_show_next(void) {
     }
 
     return display_task_show_asset(next);
+}
+
+/**
+ * Show the setup screen.
+ *
+ * The screen tells the user which network to join and what to do next.
+ */
+display_result_t display_task_show_setup_screen(const setup_screen_info_t *info) {
+    if (s_frame == NULL) {
+        return DISPLAY_ERROR;
+    }
+
+    setup_screen_draw(s_frame, info);
+    epaper_display(s_frame);
+    return DISPLAY_OK;
+}
+
+/**
+ * Show a screen explaining that setup failed.
+ */
+display_result_t display_task_show_setup_error(const char *message) {
+    if (s_frame == NULL) {
+        return DISPLAY_ERROR;
+    }
+
+    setup_screen_draw_error(s_frame, message);
+    epaper_display(s_frame);
+    return DISPLAY_OK;
+}
+
+/**
+ * Show the claim screen.
+ *
+ * This is shown once the frame has enrolled with the server and is waiting
+ * for the owner to claim it.
+ */
+display_result_t display_task_show_claim_screen(const char *claim_code, const char *claim_url) {
+    if (s_frame == NULL) {
+        return DISPLAY_ERROR;
+    }
+
+    setup_screen_draw_claim(s_frame, claim_code, claim_url);
+    epaper_display(s_frame);
+    return DISPLAY_OK;
 }
 
 /**

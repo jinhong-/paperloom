@@ -227,6 +227,76 @@ void board_wifi_stop(void) {
 }
 
 /**
+ * The AP's channel.
+ */
+#define AP_CHANNEL 1
+
+/**
+ * The AP's maximum number of clients.
+ */
+#define AP_MAX_CLIENTS 4
+
+/**
+ * Start a Wi-Fi access point.
+ *
+ * The access point is how the frame is set up: the user joins it and opens
+ * the setup page. The name and passphrase are shown on the panel.
+ *
+ * @param ssid     The network name.
+ * @param password The passphrase. At least eight characters.
+ *
+ * @return ESP_OK on success.
+ */
+esp_err_t board_wifi_start_ap(const char *ssid, const char *password) {
+    if (!s_wifi_started) {
+        ESP_ERROR_CHECK(board_wifi_start());
+    }
+
+    esp_netif_create_default_wifi_ap();
+
+    wifi_config_t config;
+    memset(&config, 0, sizeof(config));
+    snprintf((char *)config.ap.ssid, sizeof(config.ap.ssid), "%s", ssid);
+    snprintf((char *)config.ap.password, sizeof(config.ap.password), "%s", password);
+    config.ap.ssid_len = (uint8_t)strlen(ssid);
+    config.ap.channel = AP_CHANNEL;
+    config.ap.max_connection = AP_MAX_CLIENTS;
+    config.ap.authmode = WIFI_AUTH_WPA2_PSK;
+    /* The passphrase is always set, so the network is always protected.
+     * The screen shows it, which is the point: the frame is on a table in
+     * the owner's home, and anyone nearby could read the panel.
+     *
+     * Protected management frames are left at their default, which means
+     * the frame will use them if the phone offers them but does not insist
+     * on them. Insisting would stop some phones from joining. */
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    ESP_LOGI(TAG, "Access point \"%s\" started", ssid);
+    return ESP_OK;
+}
+
+/**
+ * Stop the access point.
+ */
+void board_wifi_stop_ap(void) {
+    if (s_wifi_started) {
+        esp_wifi_stop();
+    }
+}
+
+/**
+ * The access point's address.
+ *
+ * The default ESP-IDF access point uses 192.168.4.1.
+ */
+const char *board_ap_address(void) {
+    return "192.168.4.1";
+}
+
+/**
  * Store Wi-Fi credentials.
  */
 esp_err_t board_set_wifi_credentials(const char *ssid, const char *password) {
