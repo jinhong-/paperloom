@@ -83,7 +83,7 @@ static int psa_random_getter(void *ctx, unsigned char *out, size_t len) {
  * Lengths below 128 are written as a single byte, which is all we need
  * here: the integers are at most 33 bytes long.
  *
- * @param raw     The raw signature, 64 bytes.
+ * @param raw     The raw signature, 64 bytes: r then s, each 32 bytes.
  * @param out     The DER output buffer.
  * @param out_len The output buffer size on entry, the length written on exit.
  *
@@ -92,13 +92,16 @@ static int psa_random_getter(void *ctx, unsigned char *out, size_t len) {
 static bool raw_to_der(const uint8_t *raw, uint8_t *out, size_t *out_len) {
     const size_t scalar_len = P256_SCALAR_BYTES;
 
-    /* Work out the encoded length of each integer: a leading zero byte is
-     * needed when the high bit of the value is set. */
-    const size_t r_len = (raw[0] & 0x80) != 0 ? scalar_len + 1 : scalar_len;
-    const size_t s_len = (raw[scalar_len] & 0x80) != 0 ? scalar_len + 1 : scalar_len;
+    /* The number of value bytes each integer occupies.
+     *
+     * A leading zero byte is needed when the high bit of the value is set,
+     * because otherwise the value would be read as a negative number. */
+    const size_t r_value_len = (raw[0] & 0x80) != 0 ? scalar_len + 1 : scalar_len;
+    const size_t s_value_len = (raw[scalar_len] & 0x80) != 0 ? scalar_len + 1 : scalar_len;
 
-    /* The sequence's contents: tag + length + value, twice. */
-    const size_t contents_len = (2 + r_len) + (2 + s_len);
+    /* The sequence's contents: each integer is a tag, a length, and the
+     * value itself. */
+    const size_t contents_len = (2 + r_value_len) + (2 + s_value_len);
     const size_t total_len = 2 + contents_len;
 
     if (*out_len < total_len) {
@@ -114,11 +117,14 @@ static bool raw_to_der(const uint8_t *raw, uint8_t *out, size_t *out_len) {
     /* The two INTEGERs. */
     for (int which = 0; which < 2; which++) {
         const uint8_t *value = raw + (which == 0 ? 0 : scalar_len);
-        const size_t encoded_len = which == 0 ? r_len : s_len;
+        const size_t value_len = which == 0 ? r_value_len : s_value_len;
 
         out[o++] = 0x02; /* INTEGER */
-        out[o++] = (uint8_t)(encoded_len - 1); /* the length of the value */
-        if (encoded_len > scalar_len) {
+        /* The length counts the value bytes only, not the tag or the
+         * length byte itself. */
+        out[o++] = (uint8_t)value_len;
+
+        if (value_len > scalar_len) {
             out[o++] = 0x00; /* the sign byte */
         }
         memcpy(out + o, value, scalar_len);

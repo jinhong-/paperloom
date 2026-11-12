@@ -32,6 +32,7 @@ idf_component_register(
         esp_timer
         nvs_flash
         fatfs
+        spiffs
         sdmmc
         esp_driver_sdspi
         esp_driver_spi

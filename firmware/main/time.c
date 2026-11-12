@@ -67,6 +67,17 @@ esp_err_t time_now(int64_t *out_ms) {
 }
 
 /**
+ * The current time in milliseconds since the epoch.
+ */
+int64_t time_now_ms(void) {
+    int64_t now = 0;
+    if (time_now(&now) != ESP_OK) {
+        return 0;
+    }
+    return now;
+}
+
+/**
  * Whether the clock is anchored to real time.
  *
  * A device that has never synced has no absolute time, and must not
@@ -99,4 +110,45 @@ esp_err_t time_set_from_server(int64_t server_time_ms) {
 
     ESP_LOGI(TAG, "Clock corrected by %lld ms", (long long)s_time_offset_ms);
     return ESP_OK;
+}
+
+/**
+ * Forget that the clock was anchored.
+ *
+ * This is used when the clock's reading turns out to be impossible, which
+ * means the offset applied to it is meaningless.
+ */
+void time_invalidate(void) {
+    s_time_valid = false;
+    s_time_offset_ms = 0;
+}
+
+/**
+ * Whether the clock's reading is plausible.
+ *
+ * A device that has been completely unpowered comes back with its real-time
+ * clock reset to the beginning of the epoch, so its reading is a small
+ * number where a real timestamp would be enormous. Such a device must not
+ * be trusted: it would compute a sleep interval of decades and appear to
+ * work while showing the wrong photo at the wrong time.
+ *
+ * The threshold is deliberately generous: it only has to distinguish "the
+ * clock has been reset" from "the clock is running", and any plausible
+ * Unix timestamp in the last few decades is far above it.
+ *
+ * @return true if the reading looks like a real time.
+ */
+bool time_is_plausible(void) {
+    /*
+     * 2020-01-01T00:00:00Z. Anything before this means the clock has
+     * been reset, not that we are living in the past.
+     */
+    const int64_t earliest_plausible_ms = 1577836800000LL;
+
+    int64_t now = 0;
+    if (time_now(&now) != ESP_OK) {
+        return false;
+    }
+
+    return now >= earliest_plausible_ms;
 }

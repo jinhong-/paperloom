@@ -205,4 +205,21 @@ ALTER TABLE request_nonces_new RENAME TO request_nonces;
 CREATE INDEX idx_nonces_seen ON request_nonces(seen_at);
 `,
   },
+  {
+    id: "0003_device_clock_and_power",
+    sql: `
+-- What the device's own clock read at its last check-in, and whether it
+-- was anchored to real time. A frame whose clock has been lost, or that
+-- is drifting, is visible here rather than silently showing the wrong
+-- photo at the wrong time.
+ALTER TABLE devices ADD COLUMN clock_ms INTEGER;
+
+-- Whether the device's clock was anchored to real time when it reported.
+ALTER TABLE devices ADD COLUMN clock_anchored INTEGER;
+
+-- Whether the frame is running on battery rather than mains power. A frame
+-- on battery spends more of its time asleep and less of it on the radio.
+ALTER TABLE devices ADD COLUMN on_battery INTEGER;
+`,
+  },
 ];

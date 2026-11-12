@@ -80,6 +80,17 @@
 #define STORAGE_ASSET_DIR STORAGE_MOUNT_POINT "/assets"
 #define STORAGE_SCHEDULE_PATH STORAGE_MOUNT_POINT "/schedule.json"
 
+/* The fallback filesystem, in flash.
+ *
+ * The microSD card is optional. When there is no card, the schedule and
+ * the assets are kept in this partition instead, so that a frame still
+ * works: it holds its schedule, still shows the photos it has, and
+ * still syncs.
+ */
+#define STORAGE_FLASH_MOUNT_POINT "/storage"
+#define STORAGE_FLASH_ASSET_DIR STORAGE_FLASH_MOUNT_POINT "/assets"
+#define STORAGE_FLASH_SCHEDULE_PATH STORAGE_FLASH_MOUNT_POINT "/schedule.json"
+
 /* ------------------------------------------------------------------ */
 /* Networking                                                          */
 /* ------------------------------------------------------------------ */
@@ -94,5 +105,15 @@
  * manifest. A 1200x1600 4bpp frame is 960,000 bytes raw and compresses to
  * roughly 300 kB; 2 MB leaves generous headroom. */
 #define SYNC_MAX_ASSET_BYTES (2 * 1024 * 1024)
+
+/* The largest sleep the device will take.
+ *
+ * A frame normally wakes every few minutes to show a photo. The limit is
+ * a safety net: if the device's clock has been lost, the computed wake
+ * time would be in the distant past and the delay would run to decades.
+ * Capping it means the device wakes often enough to get the time from the
+ * server and recover.
+ */
+#define MAX_SLEEP_MS (6 * 60 * 60 * 1000)
 
 #endif /* APP_CONFIG_H */

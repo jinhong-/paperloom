@@ -24,6 +24,17 @@ import type { Db } from "../db/index.js";
 import type { ScheduleService } from "../schedule/service.js";
 
 /**
+ * How many assets a frame on battery is given in one check-in.
+ *
+ * A frame on mains power can fetch everything it is missing at once. A
+ * frame on battery cannot: it spends most of its life asleep, and every
+ * download is radio time and therefore power. So a battery frame is given
+ * only as many assets as it needs to cover the coming period, and
+ * collects the rest on later check-ins.
+ */
+const BATTERY_ASSET_LIMIT = 2;
+
+/**
  * The body a device sends when it checks in.
  */
 export interface SyncRequest {
@@ -47,6 +58,26 @@ export interface SyncRequest {
   readonly firmware_version?: string;
   /** Why the device woke: timer | button | boot. */
   readonly wake_reason?: string;
+  /**
+   * What the device's own clock reads, in milliseconds since the epoch.
+   *
+   * The server uses this to see how far the device's clock has drifted.
+   */
+  readonly clock_ms?: number;
+  /**
+   * Whether the device's clock is anchored to real time.
+   *
+   * Zero means the device has never synced, or has lost power and come
+   * back without a clock.
+   */
+  readonly clock_anchored?: number;
+  /**
+   * Whether the frame is running on battery rather than mains power.
+   *
+   * A frame on battery spends more of its time asleep, so the server is
+   * more careful about how much it asks it to download.
+   */
+  readonly on_battery?: number;
 }
 
 /** The body the server sends back. */
@@ -238,18 +269,52 @@ export function registerDeviceApi(app: FastifyInstance, options: DeviceApiOption
 
     const body = request.body as SyncRequest;
 
+    // The device reports what its own clock reads. This is how a frame
+    // that has lost power, or whose real-time clock has drifted, becomes
+    // visible in the logs instead of silently showing the wrong photo.
+    //
+    // The reported clock has already been used to check the request's
+    // timestamp, so a large drift means the device is close to falling
+    // out of the accepted window.
+    if (typeof body.clock_ms === "number") {
+      const drift = Math.abs(Date.now() - body.clock_ms);
+      if (drift > MAX_CLOCK_SKEW_MS) {
+        request.log.warn(
+          { deviceId: auth.deviceId, clockMs: body.clock_ms, drift },
+          "the device's clock is far from the server's",
+        );
+      } else {
+        request.log.info(
+          { deviceId: auth.deviceId, drift },
+          "the device's clock is close to the server's",
+        );
+      }
+    }
+    if (body.clock_anchored === 0) {
+      request.log.warn(
+        { deviceId: auth.deviceId },
+        "the device reports that its clock is not anchored",
+      );
+    }
+
     // The reported displayed_asset is the implicit acknowledgement: it tells
     // the server which asset is actually on the panel.
     db.prepare(
       `UPDATE devices
        SET displayed_asset = ?, battery_mv = COALESCE(?, battery_mv),
-           firmware_version = COALESCE(?, firmware_version), last_seen_at = ?
+           firmware_version = COALESCE(?, firmware_version), last_seen_at = ?,
+           clock_ms = COALESCE(?, clock_ms),
+           clock_anchored = COALESCE(?, clock_anchored),
+           on_battery = COALESCE(?, on_battery)
        WHERE id = ?`,
     ).run(
       body.displayed_asset ?? null,
       body.battery_mv ?? null,
       body.firmware_version ?? null,
       new Date().toISOString(),
+      body.clock_ms ?? null,
+      body.clock_anchored ?? null,
+      body.on_battery ?? null,
       auth.id,
     );
 
@@ -268,8 +333,19 @@ export function registerDeviceApi(app: FastifyInstance, options: DeviceApiOption
     const cached = new Set(body.cached_assets ?? []);
     const assetManifest: SyncResponse["assets"] = {};
 
+    // How many assets the frame is told to download in one go.
+    //
+    // A frame on mains power can fetch everything it is missing at once.
+    // A frame on battery cannot: it spends most of its life asleep, and
+    // every download is radio time and therefore power. So a battery
+    // frame is given the smallest number of assets it needs to cover the
+    // coming period, and collects the rest on later check-ins.
+    const limit = body.on_battery === 1 ? BATTERY_ASSET_LIMIT : required.size;
+
+    let offered = 0;
     for (const hash of required) {
       if (cached.has(hash)) continue;
+      if (offered >= limit) break;
       const bytes = await assets.get(hash);
       if (!bytes) continue;
       assetManifest[hash] = {
@@ -277,6 +353,7 @@ export function registerDeviceApi(app: FastifyInstance, options: DeviceApiOption
         sha256: hash,
         size: bytes.length,
       };
+      offered++;
     }
 
     const response: SyncResponse = {

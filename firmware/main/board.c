@@ -20,6 +20,8 @@
 #include "nvs_flash.h"
 #include "time.h"
 
+#include "lwip/sockets.h"
+
 #include "app_config.h"
 #include "board.h"
 
@@ -84,6 +86,17 @@ bool board_button_pressed(int gpio_num) {
  */
 int board_read_battery_mv(void) {
     return 0;
+}
+
+/**
+ * Whether the frame is running on battery rather than mains power.
+ *
+ * The battery-sense pin has not been verified on this board, so there is
+ * nothing to measure yet. The frame behaves the same either way; the
+ * answer only tells the server how much it may ask the frame to download.
+ */
+bool board_is_on_battery(void) {
+    return false;
 }
 
 /**
@@ -252,7 +265,11 @@ esp_err_t board_wifi_start_ap(const char *ssid, const char *password) {
         ESP_ERROR_CHECK(board_wifi_start());
     }
 
-    esp_netif_create_default_wifi_ap();
+    esp_netif_t *ap_netif = esp_netif_create_default_wifi_ap();
+    if (ap_netif == NULL) {
+        ESP_LOGE(TAG, "Could not create the access point's network interface");
+        return ESP_FAIL;
+    }
 
     wifi_config_t config;
     memset(&config, 0, sizeof(config));
@@ -274,7 +291,23 @@ esp_err_t board_wifi_start_ap(const char *ssid, const char *password) {
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    ESP_LOGI(TAG, "Access point \"%s\" started", ssid);
+    /* Start the DHCP server.
+     *
+     * Without it a client can join the network but is given no address,
+     * so it cannot reach the setup page at all. The user would see the
+     * frame's screen say "join this network" and then find that nothing
+     * works.
+     *
+     * The default access point's network interface already starts a DHCP
+     * server, so this is usually a no-op that reports that it is already
+     * running. That is not a failure. */
+    esp_err_t err = esp_netif_dhcps_start(ap_netif);
+    if (err != ESP_OK && err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED) {
+        ESP_LOGE(TAG, "Could not start the DHCP server: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    ESP_LOGI(TAG, "Access point \"%s\" started, serving %s", ssid, board_ap_address());
     return ESP_OK;
 }
 

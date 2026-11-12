@@ -36,6 +36,16 @@ bool board_button_pressed(int gpio_num);
 int board_read_battery_mv(void);
 
 /**
+ * Whether the frame is running on battery rather than mains power.
+ *
+ * The battery-sense pin on this board has not been verified, so this
+ * reports "on mains" until it can be measured. The frame behaves the same
+ * either way; the difference is only that the server is told, so that it
+ * can be more conservative about how much it asks the frame to download.
+ */
+bool board_is_on_battery(void);
+
+/**
  * The CA certificate used to validate the server, or NULL to use the
  * global trust store.
  */

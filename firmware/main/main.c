@@ -88,6 +88,18 @@ static int64_t run_cycle(wake_reason_t reason) {
         ESP_LOGI(TAG, "Button wake: forcing a sync");
     }
 
+    /* A device whose clock has been lost, or that has been unpowered, has
+     * no idea what time it is. Its schedule cannot be executed, and the
+     * server would reject its requests anyway, so the only useful thing
+     * it can do is get the time. */
+    if (!time_is_plausible()) {
+        ESP_LOGW(TAG, "The clock reads %lld ms, which is not a real time; "
+                      "the device has probably lost power",
+                 (long long)time_now_ms());
+        sync_due = true;
+        time_invalidate();
+    }
+
     /* 2. Sync if needed. This may also bring down new assets. */
     if (sync_due) {
         ESP_LOGI(TAG, "Sync is due");
@@ -124,7 +136,11 @@ static int64_t run_cycle(wake_reason_t reason) {
             }
 
             if (sync_perform(&now_ms) == SYNC_OK) {
-                /* The server may have replaced the schedule, so re-check. */
+                /* The server may have replaced the schedule, and it may
+                 * have corrected the clock, so the due check is redone
+                 * against the current time rather than the one from the
+                 * top of the cycle. */
+                time_now(&now_ms);
                 if (schedule_next_event(&due_event) == SCHEDULE_OK) {
                     display_due = due_event.at_ms <= now_ms;
                 }
@@ -134,8 +150,16 @@ static int64_t run_cycle(wake_reason_t reason) {
         }
     }
 
-    /* 3. Execute a due display event. */
-    if (display_due) {
+    /* 3. Execute a due display event.
+     *
+     * The clock is re-read here rather than reusing the value from the
+     * top of the cycle: the sync may have corrected it, and the schedule
+     * is expressed in the server's time. Comparing a server timestamp
+     * against a stale reading would show the wrong photo, or none. */
+    if (!time_is_valid()) {
+        ESP_LOGW(TAG, "The clock is still not anchored; not showing anything");
+    } else if (display_due) {
+        time_now(&now_ms);
         ESP_LOGI(TAG, "Display event due at %lld", (long long)due_event.at_ms);
         if (display_task_show_asset(due_event.asset_hash) == DISPLAY_OK) {
             /* Only record the asset once it is actually on the panel. */
@@ -152,7 +176,14 @@ static int64_t run_cycle(wake_reason_t reason) {
         }
     }
 
-    /* 4. Work out when to wake next. */
+    /* 4. Work out when to wake next.
+     *
+     * The clock is read again because the sync may have corrected it.
+     * Both the schedule and the next sync time are expressed in the
+     * server's time, so they have to be compared against the corrected
+     * clock rather than the one from the top of the cycle. */
+    time_now(&now_ms);
+
     int64_t next_event_ms = 0;
     bool have_event = schedule_next_event(&due_event) == SCHEDULE_OK;
     if (have_event) {
@@ -179,6 +210,19 @@ static int64_t run_cycle(wake_reason_t reason) {
     if (delay >= 0 && delay < 1000) {
         /* Never spin: always sleep at least a second. */
         delay = 1000;
+    }
+
+    /* A device whose clock has been lost, or that has been unpowered,
+     * computes a delay against a timestamp that is far in the past. The
+     * result is a sleep interval of decades, during which the frame shows
+     * nothing and never checks in again. Cap the delay so that the device
+     * wakes often enough to get the time from the server and recover. */
+    if (delay > MAX_SLEEP_MS) {
+        ESP_LOGW(TAG,
+                 "The computed sleep of %lld ms is longer than the limit; "
+                 "the clock is probably wrong, so waking sooner",
+                 (long long)delay);
+        delay = MAX_SLEEP_MS;
     }
 
     ESP_LOGI(TAG, "Next wake in %lld ms", (long long)delay);
@@ -212,9 +256,10 @@ void app_main(void) {
     ESP_LOGI(TAG, "Step: storage");
     if (storage_init() != ESP_OK) {
         /* A missing or unreadable SD card must not stop the device. It
-         * simply cannot show anything it has not already got, and the
-         * panel keeps whatever it was showing. */
-        ESP_LOGW(TAG, "Continuing without a usable SD card");
+         * falls back to the cache in flash, and if even that is
+         * unavailable the frame simply cannot show anything it has not
+         * already got, so the panel keeps whatever it was showing. */
+        ESP_LOGW(TAG, "Continuing without a usable cache");
     }
     ESP_LOGI(TAG, "Step: clock");
     ESP_ERROR_CHECK(time_init());

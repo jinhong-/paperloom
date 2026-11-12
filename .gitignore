@@ -20,6 +20,12 @@ firmware/dependencies.lock
 # interpreter does not change between builds.
 firmware/.paperloom-env.json
 
+# Scratch files from reading the flash on the device.
+firmware/nvs*.bin
+firmware/otadata*.bin
+firmware/pt.bin
+firmware/app-*.bin
+
 # Editors and OS
 .DS_Store
 .idea/

@@ -361,7 +361,6 @@ bool sync_enrol(char *claim_code, size_t claim_code_len, char *claim_url, size_t
                           "{\"device_id\":\"%s\",\"name\":\"Paperloom\","
                           "\"public_key\":\"%s\",\"panel_width\":%d,\"panel_height\":%d}",
                           s_device_id, public_key, PANEL_WIDTH, PANEL_HEIGHT);
-
     char response[2048];
     size_t response_len = sizeof(response);
 
@@ -451,8 +450,13 @@ bool sync_fetch_server_time(void) {
         return false;
     }
 
+    /* The path has to be appended to the server URL: the URL on its own
+     * is the root of the server, not the endpoint that gives the time. */
+    char url[512];
+    snprintf(url, sizeof(url), "%s%s", s_server_url, "/api/device/time");
+
     esp_http_client_config_t config = {
-        .url = s_server_url,
+        .url = url,
         .method = HTTP_METHOD_GET,
         .timeout_ms = SYNC_HTTP_TIMEOUT_MS,
         .cert_pem = board_ca_certificate(),
@@ -461,29 +465,36 @@ bool sync_fetch_server_time(void) {
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == NULL) {
+        ESP_LOGW(TAG, "Could not create the HTTP client for the time request");
         return false;
     }
 
     char response[256];
-    size_t received = 0;
     bool ok = false;
 
     esp_err_t err = esp_http_client_open(client, 0);
-    if (err == ESP_OK) {
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Could not open %s: %s", url, esp_err_to_name(err));
+    } else {
         esp_http_client_fetch_headers(client);
         int read = esp_http_client_read_response(client, response, sizeof(response) - 1);
-        if (read > 0) {
-            received = (size_t)read;
-            response[received] = '\0';
+        if (read <= 0) {
+            ESP_LOGW(TAG, "The time request returned no body");
+        } else {
+            response[read] = '\0';
 
             cJSON *root = cJSON_Parse(response);
-            if (root != NULL) {
+            if (root == NULL) {
+                ESP_LOGE(TAG, "Could not parse the time response: %s", response);
+            } else {
                 cJSON *server_time = cJSON_GetObjectItem(root, "server_time");
                 int64_t server_ms = 0;
                 if (cJSON_IsString(server_time) && server_time->valuestring != NULL &&
                     parse_iso8601_ms(server_time->valuestring, &server_ms) == ESP_OK) {
                     time_set_from_server(server_ms);
                     ok = true;
+                } else {
+                    ESP_LOGE(TAG, "The time response had no usable server_time: %s", response);
                 }
                 cJSON_Delete(root);
             }
@@ -821,8 +832,22 @@ static char *build_sync_body(size_t *out_len) {
         cJSON_AddNumberToObject(root, "battery_mv", battery_mv);
     }
 
+    /* Tell the server what kind of power the frame is on.
+     *
+     * A frame on battery cannot afford to spend a lot of power on the
+     * radio, so the server can be more careful about how much it asks it
+     * to download. */
+    cJSON_AddNumberToObject(root, "on_battery", board_is_on_battery() ? 1 : 0);
+
     cJSON_AddStringToObject(root, "firmware_version", APP_VERSION);
     cJSON_AddStringToObject(root, "wake_reason", "timer");
+
+    /* Report the clock so the server can see whether the device's time is
+     * trustworthy. A device whose clock has been lost, or that is running
+     * far out of step, says so here rather than silently showing the wrong
+     * photos at the wrong times. */
+    cJSON_AddNumberToObject(root, "clock_ms", (double)time_now_ms());
+    cJSON_AddNumberToObject(root, "clock_anchored", time_is_valid() ? 1 : 0);
 
     char *body = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);

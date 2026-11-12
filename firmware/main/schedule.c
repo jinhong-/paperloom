@@ -64,7 +64,10 @@ static esp_err_t parse_schedule(const char *json) {
     cJSON *revision = cJSON_GetObjectItem(root, "revision");
     cJSON *items = cJSON_GetObjectItem(root, "items");
 
-    if (!cJSON_IsObject(revision) || !cJSON_IsArray(items)) {
+    /* The revision is an opaque string that the server computes from the
+     * schedule's contents. The device only compares it, so it does not
+     * need to interpret it. */
+    if (!cJSON_IsString(revision) || !cJSON_IsArray(items)) {
         ESP_LOGE(TAG, "The schedule is missing 'revision' or 'items'");
         cJSON_Delete(root);
         return ESP_ERR_INVALID_ARG;

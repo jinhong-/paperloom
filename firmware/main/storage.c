@@ -22,6 +22,7 @@
 #include "driver/gpio.h"
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_spiffs.h"
 #include "esp_vfs_fat.h"
 #include "nvs.h"
 #include "sdmmc_cmd.h"
@@ -31,10 +32,60 @@
 
 static const char *TAG = "storage";
 
+/**
+ * Where the cache lives.
+ *
+ * The microSD card is preferred: it holds far more than flash does. When
+ * no card is inserted the cache lives in the flash partition instead, so
+ * that the frame still works without one.
+ */
+static const char *s_root = STORAGE_FLASH_MOUNT_POINT;
+static const char *s_asset_dir = STORAGE_FLASH_ASSET_DIR;
+static const char *s_schedule_path = STORAGE_FLASH_SCHEDULE_PATH;
+
+/**
+ * Whether a usable cache is available.
+ */
 static bool s_mounted = false;
 
 /**
- * Mount the SD card.
+ * Mount the fallback filesystem in flash.
+ *
+ * This is what the frame uses when there is no microSD card. It is small,
+ * so it holds the schedule and a handful of assets rather than a whole
+ * library, but it is enough for the frame to function.
+ */
+static esp_err_t mount_flash_filesystem(void) {
+    esp_vfs_spiffs_conf_t conf = {
+        .base_path = STORAGE_FLASH_MOUNT_POINT,
+        .partition_label = "storage",
+        .max_files = 8,
+        .format_if_mount_failed = true,
+    };
+
+    esp_err_t err = esp_vfs_spiffs_register(&conf);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Could not mount the flash filesystem: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    s_root = STORAGE_FLASH_MOUNT_POINT;
+    s_asset_dir = STORAGE_FLASH_ASSET_DIR;
+    s_schedule_path = STORAGE_FLASH_SCHEDULE_PATH;
+
+    mkdir(s_asset_dir, 0775);
+
+    size_t total = 0;
+    size_t used = 0;
+    if (esp_spiffs_info(conf.partition_label, &total, &used) == ESP_OK) {
+        ESP_LOGI(TAG, "Flash filesystem ready (%u bytes used of %u)", (unsigned)used,
+                 (unsigned)total);
+    }
+    return ESP_OK;
+}
+
+/**
+ * Mount the microSD card.
  *
  * The card is mounted with FAT, which is what most cards are formatted with
  * and what the reference firmware uses.
@@ -87,18 +138,31 @@ esp_err_t storage_init(void) {
     if (err != ESP_OK) {
         /* A timeout here means the card did not answer: usually no card
          * is inserted, or the card is not seated properly. It is not a
-         * fatal condition, because the device can still hold and show an
-         * image that was cached earlier. */
+         * fatal condition, because the frame falls back to the cache in
+         * flash. */
         ESP_LOGW(TAG, "SD card mount failed: %s", esp_err_to_name(err));
         ESP_LOGW(TAG, "Check that a FAT-formatted card is inserted and seated");
-        return err;
+
+        esp_err_t flash_err = mount_flash_filesystem();
+        if (flash_err != ESP_OK) {
+            ESP_LOGE(TAG, "No usable storage: the card failed and so did the flash filesystem");
+            return err;
+        }
+
+        s_mounted = true;
+        ESP_LOGW(TAG, "Continuing without a card, using the cache in flash");
+        return ESP_OK;
     }
+
+    s_root = STORAGE_MOUNT_POINT;
+    s_asset_dir = STORAGE_ASSET_DIR;
+    s_schedule_path = STORAGE_SCHEDULE_PATH;
 
     s_mounted = true;
     ESP_LOGI(TAG, "SD card mounted at %s", STORAGE_MOUNT_POINT);
 
     /* Make sure the asset directory exists. */
-    mkdir(STORAGE_ASSET_DIR, 0775);
+    mkdir(s_asset_dir, 0775);
     return ESP_OK;
 }
 
@@ -112,7 +176,7 @@ bool storage_is_mounted(void) {
  * Assets are stored flat, named by their content hash.
  */
 void storage_asset_path(const char *hash, char *out, size_t out_len) {
-    snprintf(out, out_len, "%s/%s", STORAGE_ASSET_DIR, hash);
+    snprintf(out, out_len, "%s/%s", s_asset_dir, hash);
 }
 
 /**
@@ -160,7 +224,7 @@ esp_err_t storage_remove_asset(const char *hash) {
  * The staging path for an in-progress download.
  */
 static void storage_staging_path(const char *hash, char *out, size_t out_len) {
-    snprintf(out, out_len, "%s/.staging.%s", STORAGE_ASSET_DIR, hash);
+    snprintf(out, out_len, "%s/.staging.%s", s_asset_dir, hash);
 }
 
 /**
@@ -254,7 +318,7 @@ esp_err_t storage_write_schedule(const char *json, size_t len) {
     }
 
     char temp_path[256];
-    snprintf(temp_path, sizeof(temp_path), "%s.tmp", STORAGE_SCHEDULE_PATH);
+    snprintf(temp_path, sizeof(temp_path), "%s.tmp", s_schedule_path);
 
     FILE *f = fopen(temp_path, "wb");
     if (f == NULL) {
@@ -272,7 +336,7 @@ esp_err_t storage_write_schedule(const char *json, size_t len) {
         return ESP_FAIL;
     }
 
-    if (rename(temp_path, STORAGE_SCHEDULE_PATH) != 0) {
+    if (rename(temp_path, s_schedule_path) != 0) {
         unlink(temp_path);
         return ESP_FAIL;
     }
@@ -291,7 +355,7 @@ esp_err_t storage_read_schedule(char *out, size_t *out_len) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    FILE *f = fopen(STORAGE_SCHEDULE_PATH, "rb");
+    FILE *f = fopen(s_schedule_path, "rb");
     if (f == NULL) {
         return ESP_ERR_NOT_FOUND;
     }
