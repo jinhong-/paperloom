@@ -8,6 +8,7 @@
     "node": ">=20"
   },
   "scripts": {
+    "setup": "npm install && npm run build:web",
     "dev": "tsx watch src/index.ts",
     "start": "node --enable-source-maps dist/index.js",
     "build": "tsc -p tsconfig.json",
@@ -16,8 +17,12 @@
     "migrate": "tsx src/db/migrate.ts",
     "preview": "tsx src/tools/preview.ts",
     "live-check": "tsx src/tools/live-check.ts",
-    "build:web": "npm --prefix web run build"
+    "build:web": "npm --prefix web run build",
+    "postinstall": "node scripts/build-web.mjs"
   },
+  "workspaces": [
+    "web"
+  ],
   "dependencies": {
     "better-sqlite3": "^11.5.0",
     "fastify": "^5.1.0",
