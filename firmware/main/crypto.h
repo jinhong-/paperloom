@@ -15,25 +15,27 @@
 extern "C" {
 #endif
 
+/* The size of the raw P-256 private scalar. */
+#define CRYPTO_PRIVATE_KEY_BYTES 32
+
 /**
  * Initialise the PSA crypto subsystem.
  */
 esp_err_t crypto_init(void);
 
 /**
- * Load the device key from its PEM representation, or generate a new one.
+ * Load the device key from its stored form, or generate a new one.
  *
- * @param pem The stored PEM key, or NULL/empty to generate a new key.
+ * The key is stored as the raw 32-byte private scalar.
+ *
+ * @param private_key The stored scalar, or NULL to generate a new key.
  */
-esp_err_t crypto_load_or_create(const char *pem);
+esp_err_t crypto_load_or_create(const uint8_t *private_key);
 
 /**
- * Export the private key as PEM so it can be stored in NVS.
- *
- * @param out     The output buffer.
- * @param out_len The buffer size on entry, the length written on exit.
+ * The private key, as the raw 32-byte scalar, for storing in NVS.
  */
-esp_err_t crypto_export_private_pem(char *out, size_t *out_len);
+esp_err_t crypto_export_private_key(uint8_t *out, size_t out_len);
 
 /**
  * The public key as the raw uncompressed point (65 bytes).

@@ -156,6 +156,10 @@ static int64_t run_cycle(wake_reason_t reason) {
 }
 
 void app_main(void) {
+    /* The very first thing the firmware does is print. If the device is
+     * boot-looping with no output at all, this line will not be seen, and
+     * that itself is diagnostic: the failure is in ESP-IDF's own startup
+     * rather than in this code. */
     ESP_LOGI(TAG, "Paperloom firmware %s starting", APP_VERSION);
 
     /* NVS is used for the device identity, Wi-Fi settings and the small
@@ -171,12 +175,26 @@ void app_main(void) {
 
     /* The e-paper holds its image without power, so the order of these
      * calls matters: bring up storage and the network, do the work, then
-     * power the panel down before sleeping. */
-    ESP_ERROR_CHECK(storage_init());
+     * power the panel down before sleeping.
+     *
+     * Each step is announced before it runs, so that a failure during
+     * start-up is visible on the serial console. */
+    ESP_LOGI(TAG, "Step: storage");
+    if (storage_init() != ESP_OK) {
+        /* A missing or unreadable SD card must not stop the device. It
+         * simply cannot show anything it has not already got, and the
+         * panel keeps whatever it was showing. */
+        ESP_LOGW(TAG, "Continuing without a usable SD card");
+    }
+    ESP_LOGI(TAG, "Step: clock");
     ESP_ERROR_CHECK(time_init());
+    ESP_LOGI(TAG, "Step: schedule");
     ESP_ERROR_CHECK(schedule_init());
+    ESP_LOGI(TAG, "Step: sync");
     ESP_ERROR_CHECK(sync_init());
+    ESP_LOGI(TAG, "Step: display");
     ESP_ERROR_CHECK(display_task_init());
+    ESP_LOGI(TAG, "Step: ready");
 
     wake_reason_t reason = detect_wake_reason();
     int64_t delay = run_cycle(reason);

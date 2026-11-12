@@ -5,9 +5,17 @@ CONFIG_IDF_TARGET="esp32s3"
 # --- Flash and partitioning -------------------------------------------
 # The ESP32-S3 module on this board is the N16R8 variant: 16 MB of flash
 # and 8 MB of PSRAM.
+#
+# The flash mode and frequency matter more than they look. The chip's
+# eFuse records that the flash is quad, so the ROM boots in QIO, but this
+# particular flash chip is not reliable at 80 MHz in quad mode: the image
+# gets corrupted during load and the ROM dies in its loader with
+# "ets_loader_map_range", showing as a boot loop with no output.
+#
+# DIO at 40 MHz is the safe combination, and it boots reliably.
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
-CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
-CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_40M=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
@@ -54,3 +62,10 @@ CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
 
 # --- Compiler ---------------------------------------------------------
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# --- Task stacks ------------------------------------------------------
+# The default 3584-byte main task stack is not enough for this firmware:
+# app_main parses JSON, hashes bodies and brings up the HTTP client, all
+# of which nest several frames deep. The reference project uses 6144 for
+# the same reason.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

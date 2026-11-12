@@ -177,6 +177,24 @@ is misleading: the *connector* is a 60-pin QSPI-style interface, but the
 MCU drives it with an ordinary SPI bus, as the vendor's own sample code
 does.
 
+### Two hardware quirks worth knowing
+
+**The flash must be DIO at 40 MHz.** The chip's eFuse records that the
+flash is quad, so the ROM boots in QIO, but this flash chip is not
+reliable at 80 MHz in quad mode: the image is corrupted during load and the
+ROM dies in its loader, which shows up as a boot loop with no output at
+all — not even the bootloader banner. DIO at 40 MHz is reliable.
+
+**The ECC accelerator cannot generate keys.** The ESP32-S3's hardware ECC
+peripheral can sign and verify but not generate a key pair, and
+ESP-IDF v6's mbedTLS configuration claims the generation capability
+anyway, which disables the software fallback that would otherwise handle
+it. `psa_generate_key()` therefore fails with `PSA_ERROR_NOT_SUPPORTED`.
+
+The firmware works around this by generating the private scalar in
+software and importing it into a hardware key slot, so signing still uses
+the accelerator.
+
 ## Development tools
 
 These live in `server/src/tools` and are useful without any hardware.

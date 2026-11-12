@@ -19,6 +19,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "driver/gpio.h"
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
@@ -60,6 +61,17 @@ esp_err_t storage_init(void) {
         .flags = SPICOMMON_BUSFLAG_MASTER | SPICOMMON_BUSFLAG_SCLK,
     };
 
+    /* The card's chip select must be an output held high before the bus
+     * is brought up, otherwise the card sees a floating select and the
+     * first command is ignored. */
+    gpio_config_t cs_config = {
+        .pin_bit_mask = (1ULL << SD_CS),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+    };
+    ESP_ERROR_CHECK(gpio_config(&cs_config));
+    gpio_set_level(SD_CS, 1);
+
     esp_err_t err = spi_bus_initialize(SD_SPI_HOST, &bus_config, SPI_DMA_CH_AUTO);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ESP_LOGE(TAG, "SD SPI bus init failed: %s", esp_err_to_name(err));
@@ -73,7 +85,12 @@ esp_err_t storage_init(void) {
     sdmmc_card_t *card = NULL;
     err = esp_vfs_fat_sdspi_mount(STORAGE_MOUNT_POINT, &host, &slot, &mount_config, &card);
     if (err != ESP_OK) {
+        /* A timeout here means the card did not answer: usually no card
+         * is inserted, or the card is not seated properly. It is not a
+         * fatal condition, because the device can still hold and show an
+         * image that was cached earlier. */
         ESP_LOGW(TAG, "SD card mount failed: %s", esp_err_to_name(err));
+        ESP_LOGW(TAG, "Check that a FAT-formatted card is inserted and seated");
         return err;
     }
 

@@ -82,6 +82,36 @@ static bool nvs_write_string(const char *key, const char *value) {
 }
 
 /**
+ * Read a NVS blob.
+ */
+static bool nvs_read_bytes(const char *key, uint8_t *out, size_t out_len) {
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
+        return false;
+    }
+    size_t len = out_len;
+    esp_err_t err = nvs_get_blob(nvs, key, out, &len);
+    nvs_close(nvs);
+    return err == ESP_OK && len == out_len;
+}
+
+/**
+ * Write a NVS blob.
+ */
+static bool nvs_write_bytes(const char *key, const uint8_t *value, size_t len) {
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) != ESP_OK) {
+        return false;
+    }
+    esp_err_t err = nvs_set_blob(nvs, key, value, len);
+    if (err == ESP_OK) {
+        err = nvs_commit(nvs);
+    }
+    nvs_close(nvs);
+    return err == ESP_OK;
+}
+
+/**
  * Compute the SHA-256 of a buffer.
  */
 static void sha256_hex(const uint8_t *data, size_t len, char *out_hex) {
@@ -181,15 +211,15 @@ static void base64url_encode(const uint8_t *data, size_t len, char *out, size_t 
 /**
  * Load or create the device identity.
  *
- * The key pair is generated on first boot and stored in NVS. The public key
- * is sent to the server during enrollment; the private key never leaves
- * the device.
+ * The key is the raw 32-byte private scalar, stored in NVS. The public
+ * key is sent to the server during enrollment; the private key never
+ * leaves the device.
  */
 static esp_err_t load_identity(void) {
-    char pem[1024] = {0};
+    uint8_t scalar[CRYPTO_PRIVATE_KEY_BYTES];
 
-    if (nvs_read_string(NVS_KEY_PRIVATE_KEY, pem, sizeof(pem))) {
-        if (crypto_load_or_create(pem) == ESP_OK) {
+    if (nvs_read_bytes(NVS_KEY_PRIVATE_KEY, scalar, sizeof(scalar))) {
+        if (crypto_load_or_create(scalar) == ESP_OK) {
             return ESP_OK;
         }
         ESP_LOGW(TAG, "The stored key could not be used; generating a new one");
@@ -200,12 +230,11 @@ static esp_err_t load_identity(void) {
     }
 
     /* Store the new key so the identity survives a restart. */
-    size_t pem_len = sizeof(pem);
-    if (crypto_export_private_pem(pem, &pem_len) != ESP_OK) {
+    if (crypto_export_private_key(scalar, sizeof(scalar)) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to export the private key");
         return ESP_FAIL;
     }
-    if (!nvs_write_string(NVS_KEY_PRIVATE_KEY, pem)) {
+    if (!nvs_write_bytes(NVS_KEY_PRIVATE_KEY, scalar, sizeof(scalar))) {
         ESP_LOGE(TAG, "Failed to store the private key");
         return ESP_FAIL;
     }
@@ -214,7 +243,7 @@ static esp_err_t load_identity(void) {
 }
 
 /**
- * The public key, base64url encoded as the raw uncompressed point.
+ * The public key, base64 encoded as the raw uncompressed point.
  *
  * The server stores this and verifies signatures against it.
  */
