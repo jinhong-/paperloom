@@ -83,7 +83,9 @@ static esp_err_t mount_flash_filesystem(void) {
     s_schedule_path = STORAGE_FLASH_SCHEDULE_PATH;
     s_using_spiffs = true;
 
-    mkdir(s_asset_dir, 0775);
+    /* The flash filesystem has no directories, so there is nothing to
+     * create: the schedule and the assets sit directly in the mount
+     * point, named so that they cannot be confused for one another. */
 
     size_t total = 0;
     size_t used = 0;
@@ -181,12 +183,41 @@ bool storage_is_mounted(void) {
 }
 
 /**
+ * The name a cached file is given in the flash filesystem.
+ *
+ * SPIFFS limits a file name to 31 characters, and the mount point is
+ * part of the path as well, so the whole path has to be short. The
+ * content hash is 64 characters, which is far too long, so the first 24
+ * of them are used: that is 96 bits, which will not collide with
+ * anything.
+ *
+ * @param hash     The content hash of the file.
+ * @param prefix   A short prefix that keeps the names apart.
+ * @param out      The output buffer.
+ * @param out_len  The output buffer size.
+ */
+static void storage_flash_name(const char *hash, const char *prefix, char *out, size_t out_len) {
+    snprintf(out, out_len, "%s%.24s", prefix, hash);
+}
+
+/**
  * The path of an asset in the cache.
  *
  * Assets are stored flat, named by their content hash.
+ *
+ * The flash filesystem has no directories: a file's name is a single
+ * component, and a path with a separator in it is not supported. So the
+ * assets sit directly in the mount point, with a prefix that keeps them
+ * apart from the schedule.
  */
 void storage_asset_path(const char *hash, char *out, size_t out_len) {
-    snprintf(out, out_len, "%s/%s", s_asset_dir, hash);
+    if (s_using_spiffs) {
+        char name[32];
+        storage_flash_name(hash, "a-", name, sizeof(name));
+        snprintf(out, out_len, "%s/%s", s_root, name);
+    } else {
+        snprintf(out, out_len, "%s/%s", s_asset_dir, hash);
+    }
 }
 
 /**
@@ -235,10 +266,14 @@ esp_err_t storage_remove_asset(const char *hash) {
  */
 static void storage_staging_path(const char *hash, char *out, size_t out_len) {
     /* The staging file sits beside the asset it will become, so that the
-     * rename that commits it stays within one directory. The name is
-     * plain: SPIFFS does not treat a leading dot specially, but nothing
-     * needs it to. */
-    snprintf(out, out_len, "%s/staging-%s", s_asset_dir, hash);
+     * rename that commits it stays within one directory. */
+    if (s_using_spiffs) {
+        char name[32];
+        storage_flash_name(hash, "t-", name, sizeof(name));
+        snprintf(out, out_len, "%s/%s", s_root, name);
+    } else {
+        snprintf(out, out_len, "%s/staging-%s", s_asset_dir, hash);
+    }
 }
 
 /**
@@ -250,6 +285,7 @@ esp_err_t storage_begin_staging(const char *hash, char *out_path, size_t out_len
     if (!s_mounted) {
         return ESP_ERR_INVALID_STATE;
     }
+
     storage_staging_path(hash, out_path, out_len);
     return ESP_OK;
 }

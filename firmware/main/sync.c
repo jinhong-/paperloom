@@ -993,6 +993,7 @@ sync_result_t sync_download_asset(const char *hash) {
     char staged_path[256];
     esp_err_t err = storage_begin_staging(hash, staged_path, sizeof(staged_path));
     if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Could not start staging %s: %s", hash, esp_err_to_name(err));
         return SYNC_ERROR;
     }
 
@@ -1052,10 +1053,14 @@ sync_result_t sync_download_asset(const char *hash) {
     }
 
     int64_t expected = esp_http_client_fetch_headers(client);
-
+    if (expected < 0) {
+        ESP_LOGW(TAG, "Could not read the response headers for %s: %lld", hash,
+                 (long long)expected);
+    }
     /* Stream the body to the staging file. */
     FILE *f = fopen(staged_path, "wb");
     if (f == NULL) {
+        ESP_LOGW(TAG, "Could not open %s for writing: %s", staged_path, strerror(errno));
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
         storage_abort_staging(staged_path);
@@ -1085,6 +1090,10 @@ sync_result_t sync_download_asset(const char *hash) {
         }
     }
 
+    if (total == 0) {
+        ESP_LOGW(TAG, "The download of %s returned no data", hash);
+    }
+
     fflush(f);
     fsync(fileno(f));
     fclose(f);
@@ -1100,17 +1109,20 @@ sync_result_t sync_download_asset(const char *hash) {
         return SYNC_ERROR;
     }
 
+    ESP_LOGI(TAG, "Downloaded %d bytes of asset %s", total, hash);
+
     /* Verify the hash. The asset's identity is its content, so a mismatch
      * means the download is unusable. The file is re-read to compute it,
      * which keeps the download path free of an incremental hash state. */
     char computed[65];
     if (!hash_file(staged_path, computed)) {
+        ESP_LOGW(TAG, "Could not hash the downloaded asset %s", hash);
         storage_abort_staging(staged_path);
         return SYNC_ERROR;
     }
 
     if (strcmp(computed, hash) != 0) {
-        ESP_LOGW(TAG, "Asset %s failed its hash check", hash);
+        ESP_LOGW(TAG, "Asset %s failed its hash check: got %s", hash, computed);
         storage_abort_staging(staged_path);
         return SYNC_ERROR;
     }

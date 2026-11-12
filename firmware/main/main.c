@@ -70,11 +70,15 @@ static int64_t run_cycle(wake_reason_t reason) {
 
     ESP_LOGI(TAG, "Waking: reason=%d now=%lld", (int)reason, (long long)now_ms);
 
-    /* 1. Work out what is due. */
+    /* 1. Work out what is due.
+     *
+     * The event that is due is the first one whose time has arrived, not
+     * the first one that is still in the future: a frame that wakes up
+     * after the photo was due is exactly the case this is about. */
     bool display_due = false;
     schedule_event_t due_event;
-    if (schedule_next_event(&due_event) == SCHEDULE_OK) {
-        display_due = due_event.at_ms <= now_ms;
+    if (schedule_due_event(&due_event) == SCHEDULE_OK) {
+        display_due = true;
     }
 
     bool sync_due = false;
@@ -141,8 +145,8 @@ static int64_t run_cycle(wake_reason_t reason) {
                  * against the current time rather than the one from the
                  * top of the cycle. */
                 time_now(&now_ms);
-                if (schedule_next_event(&due_event) == SCHEDULE_OK) {
-                    display_due = due_event.at_ms <= now_ms;
+                if (schedule_due_event(&due_event) == SCHEDULE_OK) {
+                    display_due = true;
                 }
             } else {
                 ESP_LOGW(TAG, "Sync failed; continuing with the cached schedule");
