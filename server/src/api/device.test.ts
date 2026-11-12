@@ -380,3 +380,150 @@ test("a device cannot sync before it has been claimed", async (t) => {
   assert.equal(response.status, 401);
 });
 
+
+test("a schedule built before the galleries change is not reused", async (t) => {
+  const server = await makeServer();
+  t.after(async () => {
+    await server.app.close();
+  });
+
+  const db = server.db;
+  const deviceId = `dev-${randomUUID()}`;
+  const keys = generateKeyPair();
+
+  // A gallery with a photo, and the owner who will be given the device.
+  const { galleryId, contentHash } = await seedGallery(server);
+  const user = db.prepare("SELECT id FROM users LIMIT 1").get() as { id: number };
+
+  // A claimed device with no galleries yet.
+  db.prepare(
+    `INSERT INTO devices (name, device_id, public_key, state, user_id)
+     VALUES ('d', ?, ?, 'claimed', ?)`,
+  ).run(deviceId, publicKeyToBase64(keys.publicKeyPem), user.id);
+
+  const deviceRowId = (
+    db.prepare("SELECT id FROM devices WHERE device_id = ?").get(deviceId) as { id: number }
+  ).id;
+
+  db.prepare(
+    `INSERT INTO device_policies (device_id, sync_interval, lookahead) VALUES (?, 3600, 10800)`,
+  ).run(deviceRowId);
+
+  // The device syncs with nothing to show, so the window is empty.
+  const empty = await signed(
+    server,
+    keys,
+    deviceId,
+    "POST",
+    "/api/device/sync",
+    Buffer.from(JSON.stringify({ device_id: deviceId })),
+  );
+  assert.equal(empty.status, 200);
+  const emptyBody = empty.body as { schedule: { items: unknown[] } };
+  assert.equal(emptyBody.schedule.items.length, 0);
+
+  // Now give it a gallery with a photo, the way the owner would.
+  db.prepare(
+    "INSERT INTO sessions (token, user_id, expires_at) VALUES ('tok', ?, datetime('now', '+1 day'))",
+  ).run(user.id);
+
+  const assign = await server.app.inject({
+    method: "POST",
+    url: `/api/devices/${deviceRowId}/galleries`,
+    headers: { cookie: "paperloom_session=tok" },
+    payload: { gallery_id: galleryId },
+  });
+  assert.equal(assign.statusCode, 200);
+
+  // The empty window must not be reused: the device has something to show
+  // now, and it must be told about it.
+  const filled = await signed(
+    server,
+    keys,
+    deviceId,
+    "POST",
+    "/api/device/sync",
+    Buffer.from(JSON.stringify({ device_id: deviceId })),
+  );
+  assert.equal(filled.status, 200);
+  const filledBody = filled.body as {
+    schedule: { items: Array<{ asset: string }> };
+    assets: Record<string, unknown>;
+  };
+
+  assert.ok(
+    filledBody.schedule.items.length > 0,
+    "the schedule must contain events once a gallery is assigned",
+  );
+  assert.equal(filledBody.schedule.items[0]!.asset, contentHash);
+  assert.ok(filledBody.assets[contentHash], "the asset must be in the manifest");
+});
+
+test("a schedule built before the policy changes is not reused", async (t) => {
+  const server = await makeServer();
+  t.after(async () => {
+    await server.app.close();
+  });
+
+  const db = server.db;
+  const deviceId = `dev-${randomUUID()}`;
+  const keys = generateKeyPair();
+
+  // A gallery with a photo, and the owner who will be given the device.
+  await seedGallery(server);
+  const user = db.prepare("SELECT id FROM users LIMIT 1").get() as { id: number };
+
+  db.prepare(
+    `INSERT INTO devices (name, device_id, public_key, state, user_id)
+     VALUES ('d', ?, ?, 'claimed', ?)`,
+  ).run(deviceId, publicKeyToBase64(keys.publicKeyPem), user.id);
+
+  const deviceRowId = (
+    db.prepare("SELECT id FROM devices WHERE device_id = ?").get(deviceId) as { id: number }
+  ).id;
+
+  // No galleries yet: the first window is empty.
+  db.prepare(
+    `INSERT INTO device_policies (device_id, sync_interval, lookahead) VALUES (?, 3600, 10800)`,
+  ).run(deviceRowId);
+
+  await signed(
+    server,
+    keys,
+    deviceId,
+    "POST",
+    "/api/device/sync",
+    Buffer.from(JSON.stringify({ device_id: deviceId })),
+  );
+
+  // Change the policy. The window boundaries move, and the device must
+  // be given a schedule that matches its new policy rather than the
+  // window that was built under the old one.
+  db.prepare(
+    "INSERT INTO sessions (token, user_id, expires_at) VALUES ('tok', ?, datetime('now', '+1 day'))",
+  ).run(user.id);
+
+  const changed = await server.app.inject({
+    method: "PATCH",
+    url: `/api/devices/${deviceRowId}/policy`,
+    headers: { cookie: "paperloom_session=tok" },
+    payload: { sync_interval: 120 },
+  });
+  assert.equal(changed.statusCode, 200);
+
+  const after = await signed(
+    server,
+    keys,
+    deviceId,
+    "POST",
+    "/api/device/sync",
+    Buffer.from(JSON.stringify({ device_id: deviceId })),
+  );
+  assert.equal(after.status, 200);
+  const afterBody = after.body as { next_sync_at: string; server_time: string };
+  const gap = new Date(afterBody.next_sync_at).getTime() - new Date(afterBody.server_time).getTime();
+  assert.ok(
+    gap <= 120_000 && gap > 0,
+    `the next sync must follow the new interval, got ${gap} ms`,
+  );
+});

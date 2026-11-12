@@ -49,6 +49,15 @@ static const char *s_schedule_path = STORAGE_FLASH_SCHEDULE_PATH;
 static bool s_mounted = false;
 
 /**
+ * Whether the cache is the filesystem in flash rather than a card.
+ *
+ * The two behave differently in one important respect: SPIFFS cannot
+ * rename onto a file that already exists, so a file has to be removed
+ * before it can be replaced.
+ */
+static bool s_using_spiffs = false;
+
+/**
  * Mount the fallback filesystem in flash.
  *
  * This is what the frame uses when there is no microSD card. It is small,
@@ -72,6 +81,7 @@ static esp_err_t mount_flash_filesystem(void) {
     s_root = STORAGE_FLASH_MOUNT_POINT;
     s_asset_dir = STORAGE_FLASH_ASSET_DIR;
     s_schedule_path = STORAGE_FLASH_SCHEDULE_PATH;
+    s_using_spiffs = true;
 
     mkdir(s_asset_dir, 0775);
 
@@ -224,7 +234,11 @@ esp_err_t storage_remove_asset(const char *hash) {
  * The staging path for an in-progress download.
  */
 static void storage_staging_path(const char *hash, char *out, size_t out_len) {
-    snprintf(out, out_len, "%s/.staging.%s", s_asset_dir, hash);
+    /* The staging file sits beside the asset it will become, so that the
+     * rename that commits it stays within one directory. The name is
+     * plain: SPIFFS does not treat a leading dot specially, but nothing
+     * needs it to. */
+    snprintf(out, out_len, "%s/staging-%s", s_asset_dir, hash);
 }
 
 /**
@@ -254,7 +268,15 @@ esp_err_t storage_commit_staging(const char *hash, const char *staged_path, uint
     storage_asset_path(hash, final_path, sizeof(final_path));
 
     /* The caller has already verified the hash; the rename is the commit
-     * point. */
+     * point.
+     *
+     * An asset is named by its content hash, so the file it replaces has
+     * the same contents. Removing it first is therefore harmless, and it
+     * is needed because SPIFFS cannot rename onto an existing file. */
+    if (s_using_spiffs) {
+        unlink(final_path);
+    }
+
     if (rename(staged_path, final_path) != 0) {
         ESP_LOGE(TAG, "Failed to commit asset %s: %s", hash, strerror(errno));
         unlink(staged_path);
@@ -332,11 +354,29 @@ esp_err_t storage_write_schedule(const char *json, size_t len) {
     fclose(f);
 
     if (written != len) {
+        ESP_LOGE(TAG, "Only %d of %d bytes of the schedule were written", (int)written, (int)len);
         unlink(temp_path);
         return ESP_FAIL;
     }
 
+    /* The old schedule is removed before the new one is renamed into place.
+     *
+     * SPIFFS cannot rename onto a file that already exists: the call fails
+     * with an I/O error. On a card, where the filesystem is FAT, the rename
+     * would simply replace the old file, and removing it first would leave
+     * a window in which the device has no schedule at all.
+     *
+     * The window is harmless here. The schedule is written on every sync,
+     * and the device reads it back at start-up; if the power were cut in
+     * between, the device would fetch the schedule again on its next
+     * check-in rather than run without one. */
+    if (s_using_spiffs) {
+        unlink(s_schedule_path);
+    }
+
     if (rename(temp_path, s_schedule_path) != 0) {
+        ESP_LOGE(TAG, "Could not rename %s to %s: %s", temp_path, s_schedule_path,
+                 strerror(errno));
         unlink(temp_path);
         return ESP_FAIL;
     }

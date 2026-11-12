@@ -51,6 +51,23 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
     return session.user_id;
   }
 
+  /**
+   * Discard the materialised schedules of every device that shows a
+   * gallery.
+   *
+   * A gallery's contents and policy decide what its devices are shown and
+   * when, so a change to the gallery makes their existing schedule
+   * windows wrong.
+   */
+  function invalidateGallery(galleryId: number): void {
+    const devices = db
+      .prepare("SELECT device_id FROM device_galleries WHERE gallery_id = ?")
+      .all(galleryId) as Array<{ device_id: number }>;
+    for (const device of devices) {
+      schedules.invalidate(device.device_id);
+    }
+  }
+
   // ---------------------------------------------------------------------
   // Sessions
   // ---------------------------------------------------------------------
@@ -219,6 +236,9 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       ...values,
       Number(id),
     );
+
+    invalidateGallery(Number(id));
+
     await reply.send({ status: "ok" });
   });
 
@@ -239,6 +259,10 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
     const hashes = db
       .prepare("SELECT content_hash FROM photos WHERE gallery_id = ? AND content_hash IS NOT NULL")
       .all(Number(id)) as Array<{ content_hash: string }>;
+
+    /* The devices that showed this gallery now show something else, so
+     * their schedules are rebuilt. */
+    invalidateGallery(Number(id));
 
     db.prepare("DELETE FROM galleries WHERE id = ?").run(Number(id));
     for (const hash of hashes) await assets.remove(hash.content_hash);
@@ -325,6 +349,10 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
         rendered.data.length,
       );
 
+    /* A new photo changes what the gallery can show, so the schedules of
+     * the devices that show it are rebuilt. */
+    invalidateGallery(Number(id));
+
     await reply.send({
       id: Number(result.lastInsertRowid),
       filename,
@@ -340,11 +368,13 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
     const { id } = request.params as { id: string };
     const photo = db
       .prepare(
-        `SELECT p.id, p.content_hash FROM photos p
+        `SELECT p.id, p.content_hash, p.gallery_id FROM photos p
          JOIN galleries g ON g.id = p.gallery_id
          WHERE p.id = ? AND g.user_id = ?`,
       )
-      .get(Number(id), userId) as { id: number; content_hash: string } | undefined;
+      .get(Number(id), userId) as
+      | { id: number; content_hash: string; gallery_id: number }
+      | undefined;
 
     if (!photo) {
       await reply.code(404).send({ error: "unknown photo" });
@@ -353,6 +383,8 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
 
     db.prepare("DELETE FROM photos WHERE id = ?").run(Number(id));
     if (photo.content_hash) await assets.remove(photo.content_hash);
+
+    invalidateGallery(photo.gallery_id);
 
     await reply.send({ status: "ok" });
   });
@@ -400,6 +432,10 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
        ON CONFLICT DO NOTHING`,
     ).run(Number(id), body.gallery_id);
 
+    /* The device's schedule changes with its galleries, so the windows
+     * that were materialised from the old set are no longer right. */
+    schedules.invalidate(Number(id));
+
     await reply.send({ status: "ok" });
   });
 
@@ -412,6 +448,8 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       Number(id),
       Number(galleryId),
     );
+
+    schedules.invalidate(Number(id));
 
     await reply.send({ status: "ok" });
   });
@@ -454,6 +492,11 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
         ...values,
         Number(id),
       );
+
+      /* The policy decides the window boundaries and how far ahead the
+       * schedule is built, so the materialised windows no longer describe
+       * what the device should be shown. */
+      schedules.invalidate(Number(id));
     }
 
     await reply.send({ status: "ok" });

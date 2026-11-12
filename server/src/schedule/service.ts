@@ -36,6 +36,21 @@ export class ScheduleService {
   ) {}
 
   /**
+   * Discard a device's materialised schedule windows.
+   *
+   * A window is materialised once and then reused, so that a device that
+   * retries a sync is given the same schedule it was given the first
+   * time. That reuse is only correct while the inputs are unchanged.
+   *
+   * When the galleries assigned to a device change, or when its policy
+   * changes, the stored windows no longer describe what the device should
+   * be shown, so they are discarded and rebuilt on the next sync.
+   */
+  invalidate(deviceId: number): void {
+    this.db.prepare("DELETE FROM schedules WHERE device_id = ?").run(deviceId);
+  }
+
+  /**
    * Get the schedule for a device covering the window that contains `now`.
    *
    * The window is aligned to the device's sync interval so that successive
