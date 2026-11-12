@@ -348,3 +348,66 @@ tr:last-child td {
   border-radius: 8px;
   font-size: 13px;
 }
+
+/* The photo preview in the gallery.
+ *
+ * The frame is 1200x1600, which is a portrait shape, so the preview is
+ * shown in that shape too. The frame's own colours are applied as a
+ * backdrop so that a photo which is mostly one colour still reads as a
+ * picture rather than a blank rectangle. */
+.photo-card {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.photo-preview {
+  width: 60px;
+  height: 80px;
+  flex: none;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  position: relative;
+}
+
+.photo-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* Shown in place of a preview that cannot be loaded. */
+.photo-preview-missing {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  font-size: 10px;
+  line-height: 1.2;
+  color: var(--muted);
+  padding: 4px;
+}
+
+/* The thumbnail in the schedule list. */
+.photo-preview-small {
+  width: 30px;
+  height: 40px;
+}
+
+/* The buttons that pick the days of the week. */
+.day-toggle {
+  min-width: 34px;
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
+.day-toggle.is-selected {
+  background: var(--accent);
+  color: #1b1815;
+  border-color: var(--accent);
+}

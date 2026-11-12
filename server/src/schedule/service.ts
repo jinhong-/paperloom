@@ -21,6 +21,11 @@ import {
   type DisplayEvent,
   type GalleryPolicy,
 } from "./materialize.js";
+import {
+  localDayAndMinute,
+  resolveInterval,
+  type SyncRule,
+} from "./rules.js";
 
 /** A schedule window as handed to a device. */
 export interface ScheduleWindow {
@@ -163,6 +168,47 @@ export class ScheduleService {
   private alignWindowStart(now: number, syncInterval: number): number {
     const interval = Math.max(1, syncInterval) * 1000;
     return Math.floor(now / interval) * interval;
+  }
+
+  /**
+   * The check-in rules for a device.
+   */
+  rulesFor(deviceId: number): SyncRule[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, days, start_minute, end_minute, sync_interval, priority
+         FROM device_sync_rules WHERE device_id = ?
+         ORDER BY priority, id`,
+      )
+      .all(deviceId) as Array<{
+      id: number;
+      days: number;
+      start_minute: number;
+      end_minute: number;
+      sync_interval: number;
+      priority: number;
+    }>;
+
+    return rows.map((r) => ({
+      id: r.id,
+      days: r.days,
+      startMinute: r.start_minute,
+      endMinute: r.end_minute,
+      syncInterval: r.sync_interval,
+      priority: r.priority,
+    }));
+  }
+
+  /**
+   * The check-in interval that applies at a given moment.
+   *
+   * This is the device's own interval unless one of its rules covers the
+   * moment, in which case the rule's interval applies.
+   */
+  intervalAt(deviceId: number, at: number): number {
+    const policy = this.policyFor(deviceId);
+    const { day, minute } = localDayAndMinute(at, policy.timezone);
+    return resolveInterval(this.rulesFor(deviceId), day, minute, policy.syncInterval);
   }
 
   /**

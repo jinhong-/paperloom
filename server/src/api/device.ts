@@ -358,7 +358,9 @@ export function registerDeviceApi(app: FastifyInstance, options: DeviceApiOption
 
     const response: SyncResponse = {
       server_time: new Date(now).toISOString(),
-      next_sync_at: new Date(now + policy.syncInterval * 1000).toISOString(),
+      // The interval depends on the time of day, so it is worked out for
+      // the moment of this check-in rather than taken from the policy.
+      next_sync_at: new Date(now + schedules.intervalAt(auth.id, now) * 1000).toISOString(),
       schedule: {
         revision: window.revision,
         items: window.items.map((item) => ({

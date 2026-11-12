@@ -20,6 +20,9 @@ const newMax = ref(21600);
 const dragging = ref(false);
 const fileInput = ref<HTMLInputElement | null>(null);
 
+/** The photos whose original could not be loaded, so a placeholder is shown. */
+const missingPreviews = ref<Set<number>>(new Set());
+
 const gallery = computed(() => selected.value);
 
 /**
@@ -28,6 +31,7 @@ const gallery = computed(() => selected.value);
 async function selectGallery(target: Gallery): Promise<void> {
   selected.value = target;
   photos.value = [];
+  missingPreviews.value = new Set();
   error.value = null;
   try {
     photos.value = await api.photos(target.id);
@@ -118,6 +122,19 @@ async function removePhoto(photo: Photo): Promise<void> {
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   }
+}
+
+/**
+ * Handle a preview that cannot be loaded.
+ *
+ * The original is only kept from the moment the photo was uploaded, so a
+ * photo that was added before that has no preview. The frame is not
+ * affected: it uses the rendered asset.
+ */
+function onPreviewError(event: Event, photo: Photo): void {
+  const image = event.target as HTMLImageElement;
+  image.style.visibility = "hidden";
+  missingPreviews.value.add(photo.id);
 }
 
 onMounted(async () => {
@@ -228,7 +245,18 @@ onMounted(async () => {
 
         <div v-if="photos.length === 0" class="empty">No photos yet.</div>
 
-        <div v-for="photo in photos" :key="photo.id" class="card row between">
+        <div v-for="photo in photos" :key="photo.id" class="card photo-card">
+          <div class="photo-preview">
+            <img
+              :src="api.photoPreviewUrl(photo.id)"
+              :alt="photo.filename"
+              loading="lazy"
+              @error="onPreviewError($event, photo)"
+            />
+            <span v-if="missingPreviews.has(photo.id)" class="photo-preview-missing">
+              no preview
+            </span>
+          </div>
           <div class="grow">
             <div>{{ photo.filename }}</div>
             <div class="small muted mono">

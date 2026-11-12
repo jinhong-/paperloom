@@ -51,6 +51,27 @@ export interface Device {
 export interface ScheduleItem {
   at: string;
   asset: string;
+  /** The name of the photo, where the server knows it. */
+  filename?: string | null;
+  /** The id of the photo, where the server knows it. */
+  photo_id?: number | null;
+}
+
+/**
+ * A time-based check-in rule.
+ */
+export interface SyncRule {
+  id: number;
+  /** Bit mask of the days the rule applies to. */
+  days: number;
+  /** Minutes from local midnight. */
+  start_minute: number;
+  /** Minutes from local midnight. */
+  end_minute: number;
+  /** How often the frame should check in during this time, in seconds. */
+  sync_interval: number;
+  /** Lower numbers win when several rules cover the same moment. */
+  priority: number;
 }
 
 /**
@@ -159,6 +180,11 @@ export const api = {
   deletePhoto: (id: number) =>
     request<{ status: string }>(`/api/photos/${id}`, { method: "DELETE" }),
 
+  /**
+   * The URL of a photo's original upload, for the gallery preview.
+   */
+  photoPreviewUrl: (id: number) => `/api/photos/${id}/preview`,
+
   /* Devices */
   devices: () => request<Device[]>("/api/devices"),
 
@@ -190,6 +216,47 @@ export const api = {
 
   schedule: (deviceId: number) =>
     request<{ revision: string; items: ScheduleItem[] }>(`/api/devices/${deviceId}/schedule`),
+
+  /* Check-in rules */
+  syncRules: (deviceId: number) => request<SyncRule[]>(`/api/devices/${deviceId}/sync-rules`),
+
+  createSyncRule: (
+    deviceId: number,
+    body: {
+      days: number;
+      start_minute: number;
+      end_minute: number;
+      sync_interval: number;
+      priority?: number;
+    },
+  ) =>
+    request<{ id: number }>(`/api/devices/${deviceId}/sync-rules`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  updateSyncRule: (
+    deviceId: number,
+    ruleId: number,
+    body: Partial<{
+      days: number;
+      start_minute: number;
+      end_minute: number;
+      sync_interval: number;
+      priority: number;
+    }>,
+  ) =>
+    request<{ status: string }>(`/api/devices/${deviceId}/sync-rules/${ruleId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
+  deleteSyncRule: (deviceId: number, ruleId: number) =>
+    request<{ status: string }>(`/api/devices/${deviceId}/sync-rules/${ruleId}`, {
+      method: "DELETE",
+    }),
+
+  timezones: () => request<{ timezones: string[] }>("/api/timezones"),
 
   deleteDevice: (id: number) =>
     request<{ status: string }>(`/api/devices/${id}`, { method: "DELETE" }),

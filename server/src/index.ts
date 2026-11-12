@@ -52,7 +52,13 @@ export async function buildServer(config: ServerConfig): Promise<BuiltServer> {
   const assetRoot = join(config.dataDir, "assets");
   mkdirSync(assetRoot, { recursive: true });
 
-  const assets = new AssetStore(db, assetRoot);
+  // The original uploads are kept alongside the rendered assets. The frame
+  // only ever sees the rendered form, but the owner recognises the
+  // original, and the gallery preview shows it.
+  const sourceRoot = join(config.dataDir, "sources");
+  mkdirSync(sourceRoot, { recursive: true });
+
+  const assets = new AssetStore(db, assetRoot, sourceRoot);
   const schedules = new ScheduleService(db, assets);
 
   const app = fastify({

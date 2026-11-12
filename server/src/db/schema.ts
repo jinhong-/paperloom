@@ -222,4 +222,31 @@ ALTER TABLE devices ADD COLUMN clock_anchored INTEGER;
 ALTER TABLE devices ADD COLUMN on_battery INTEGER;
 `,
   },
+  {
+    id: "0004_sync_rules",
+    sql: `
+-- Time-based check-in rules.
+--
+-- A frame does not need to check in at the same rate all day. During the
+-- hours when somebody is around, it can be responsive; overnight it can
+-- save power by checking in rarely. Each rule says which days of the week
+-- it applies to, the time of day it covers, and how often the frame should
+-- check in during that time.
+CREATE TABLE device_sync_rules (
+  id            INTEGER PRIMARY KEY,
+  device_id     INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  -- Bit mask of days: bit 0 is Sunday, bit 6 is Saturday.
+  days          INTEGER NOT NULL DEFAULT 127,
+  -- Minutes from local midnight.
+  start_minute  INTEGER NOT NULL DEFAULT 0,
+  end_minute    INTEGER NOT NULL DEFAULT 1440,
+  -- How often the frame should check in during this time.
+  sync_interval INTEGER NOT NULL DEFAULT 3600,
+  -- Lower numbers win when several rules cover the same moment.
+  priority      INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX idx_sync_rules_device ON device_sync_rules(device_id);
+`,
+  },
 ];

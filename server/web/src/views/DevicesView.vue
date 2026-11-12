@@ -1,21 +1,43 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 
-import { api, type Device, type ScheduleItem } from "@/api";
+import { api, type Device, type ScheduleItem, type SyncRule } from "@/api";
+import { DAY_NAMES, DAY_SHORT } from "@/lib/dayNames";
+import {
+  describeDays,
+  describeInterval,
+  daysMask,
+  formatMinute,
+  parseMinute,
+} from "@/lib/syncRules";
+import { availableTimeZones, browserTimeZone, timeZoneLabel } from "@/lib/timezones";
 import { useSessionStore } from "@/stores/session";
 
 const session = useSessionStore();
 
 const selected = ref<Device | null>(null);
 const schedule = ref<ScheduleItem[]>([]);
-const scheduleRevision = ref("");
 const error = ref<string | null>(null);
+const notice = ref<string | null>(null);
 
 const syncInterval = ref(3600);
 const lookahead = ref(10800);
 const timezone = ref("UTC");
 
 const deviceGalleries = ref<Set<number>>(new Set());
+
+/* Check-in rules. */
+const rules = ref<SyncRule[]>([]);
+const ruleDays = ref<number[]>([0, 1, 2, 3, 4, 5, 6]);
+const ruleStart = ref("08:00");
+const ruleEnd = ref("22:00");
+const ruleInterval = ref(300);
+
+/** The time zones the browser knows about. */
+const timeZones = availableTimeZones();
+
+/** The browser's own zone, offered as the obvious default. */
+const browserZone = browserTimeZone();
 
 /**
  * Load the schedule for the selected device.
@@ -24,10 +46,11 @@ async function showSchedule(device: Device): Promise<void> {
   selected.value = device;
   schedule.value = [];
   error.value = null;
+  notice.value = null;
   try {
     const result = await api.schedule(device.id);
     schedule.value = result.items;
-    scheduleRevision.value = result.revision;
+    rules.value = await api.syncRules(device.id);
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   }
@@ -39,15 +62,24 @@ async function showSchedule(device: Device): Promise<void> {
 async function savePolicy(): Promise<void> {
   if (!selected.value) return;
   error.value = null;
+  notice.value = null;
   try {
     await api.updatePolicy(selected.value.id, {
       sync_interval: syncInterval.value,
       lookahead: lookahead.value,
       timezone: timezone.value,
     });
+    notice.value = "Policy saved.";
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   }
+}
+
+/**
+ * Use the browser's own time zone.
+ */
+function useBrowserZone(): void {
+  timezone.value = browserZone;
 }
 
 /**
@@ -77,8 +109,53 @@ async function removeDevice(device: Device): Promise<void> {
     if (selected.value?.id === device.id) {
       selected.value = null;
       schedule.value = [];
+      rules.value = [];
     }
     await session.reload();
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  }
+}
+
+/**
+ * Add a check-in rule.
+ */
+async function addRule(): Promise<void> {
+  if (!selected.value) return;
+
+  const start = parseMinute(ruleStart.value);
+  const end = parseMinute(ruleEnd.value);
+  if (start === null || end === null) {
+    error.value = "The times must look like 08:00.";
+    return;
+  }
+  if (ruleInterval.value < 60) {
+    error.value = "The interval must be at least a minute.";
+    return;
+  }
+
+  error.value = null;
+  notice.value = null;
+  try {
+    await api.createSyncRule(selected.value.id, {
+      days: daysMask(ruleDays.value),
+      start_minute: start,
+      end_minute: end,
+      sync_interval: ruleInterval.value,
+    });
+    rules.value = await api.syncRules(selected.value.id);
+    notice.value = "Rule added.";
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  }
+}
+
+async function removeRule(rule: SyncRule): Promise<void> {
+  if (!selected.value) return;
+  error.value = null;
+  try {
+    await api.deleteSyncRule(selected.value.id, rule.id);
+    rules.value = await api.syncRules(selected.value.id);
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   }
@@ -115,8 +192,22 @@ const batteryPercent = computed(() => {
   return Math.max(0, Math.min(100, Math.round(((mv - 3000) / 1200) * 100)));
 });
 
+/**
+ * The rules, in a form that is easy to read.
+ */
+const describedRules = computed(() =>
+  rules.value.map((rule) => ({
+    ...rule,
+    daysText: describeDays(rule.days),
+    startText: formatMinute(rule.start_minute),
+    endText: formatMinute(rule.end_minute),
+    intervalText: describeInterval(rule.sync_interval),
+  })),
+);
+
 onMounted(async () => {
   await session.reload();
+  timezone.value = browserZone;
 });
 </script>
 
@@ -128,6 +219,7 @@ onMounted(async () => {
 
   <div v-if="session.error" class="error">{{ session.error }}</div>
   <div v-if="error" class="error">{{ error }}</div>
+  <div v-if="notice" class="ok">{{ notice }}</div>
 
   <div class="grid-2">
     <div>
@@ -199,8 +291,11 @@ onMounted(async () => {
       <div class="card">
         <h2>Check-in policy</h2>
         <div class="field">
-          <label for="sync-interval">Check in every (seconds)</label>
+          <label for="sync-interval">Check in every</label>
           <input id="sync-interval" v-model.number="syncInterval" type="number" min="60" />
+          <div class="small muted">
+            The default, used whenever no rule below applies.
+          </div>
         </div>
         <div class="field">
           <label for="lookahead">Schedule lookahead (seconds)</label>
@@ -212,9 +307,87 @@ onMounted(async () => {
         </div>
         <div class="field">
           <label for="timezone">Time zone</label>
-          <input id="timezone" v-model="timezone" placeholder="Europe/Berlin" />
+          <select id="timezone" v-model="timezone">
+            <option v-for="zone in timeZones" :key="zone" :value="zone">
+              {{ timeZoneLabel(zone) }}
+            </option>
+          </select>
+          <button class="secondary" @click="useBrowserZone">
+            Use this computer's zone ({{ browserZone }})
+          </button>
+          <div class="small muted">
+            The frame's clock is kept in this zone when it plans what to show.
+          </div>
         </div>
         <button @click="savePolicy">Save policy</button>
+      </div>
+
+      <div class="card">
+        <h2>Check-in rules</h2>
+        <p class="small muted">
+          A frame does not need to check in at the same rate all day. During the
+          hours when somebody is around it can be responsive; overnight it can
+          save power by waiting. When two rules cover the same moment, the more
+          specific one wins: a rule for weekdays beats one for every day.
+        </p>
+
+        <div v-if="describedRules.length === 0" class="empty">
+          No rules. The frame checks in every
+          {{ describeInterval(syncInterval) }} all day.
+        </div>
+
+        <div
+          v-for="rule in describedRules"
+          :key="rule.id"
+          class="row between"
+          style="padding: 8px 0; border-bottom: 1px solid var(--line)"
+        >
+          <div>
+            <strong>{{ rule.daysText }}</strong>
+            <span class="muted">
+              {{ rule.startText }}–{{ rule.endText }} · every {{ rule.intervalText }}
+            </span>
+          </div>
+          <button class="danger" @click="removeRule(rule)">Remove</button>
+        </div>
+
+        <h3 style="margin-top: 20px">Add a rule</h3>
+        <div class="field">
+          <label>Days</label>
+          <div class="row" style="gap: 4px; flex-wrap: wrap">
+            <button
+              v-for="(name, day) in DAY_NAMES"
+              :key="day"
+              class="secondary day-toggle"
+              :class="{ 'is-selected': ruleDays.includes(day) }"
+              :title="name"
+              @click="ruleDays = ruleDays.includes(day)
+                ? ruleDays.filter(d => d !== day)
+                : [...ruleDays, day].sort()"
+            >
+              {{ DAY_SHORT[day] }}
+            </button>
+          </div>
+          <div class="small muted">
+            {{ describeDays(daysMask(ruleDays)) }}
+          </div>
+        </div>
+        <div class="grid-2">
+          <div class="field">
+            <label for="rule-start">From</label>
+            <input id="rule-start" v-model="ruleStart" type="time" />
+          </div>
+          <div class="field">
+            <label for="rule-end">Until</label>
+            <input id="rule-end" v-model="ruleEnd" type="time" />
+          </div>
+        </div>
+        <div class="field">
+          <label for="rule-interval">Check in every (seconds)</label>
+          <input id="rule-interval" v-model.number="ruleInterval" type="number" min="60" />
+          <div class="small muted">{{ describeInterval(ruleInterval) }}</div>
+        </div>
+        <button @click="addRule">Add rule</button>
       </div>
 
       <div class="card">
@@ -233,9 +406,11 @@ onMounted(async () => {
 
       <div class="card">
         <h2>Upcoming schedule</h2>
-        <div class="small muted" style="margin-bottom: 12px">
-          Revision <span class="mono">{{ scheduleRevision }}</span>
-        </div>
+        <p class="small muted">
+          The photos this frame will show, and when. The frame is told this
+          list at each check-in, so a change here takes effect the next time
+          it wakes up.
+        </p>
 
         <div v-if="schedule.length === 0" class="empty">
           No events. Assign a gallery with photos.
@@ -243,8 +418,14 @@ onMounted(async () => {
 
         <div v-else class="schedule-list">
           <div v-for="(item, index) in schedule.slice(0, 24)" :key="index" class="schedule-item">
-            <strong style="min-width: 120px">{{ formatTime(item.at) }}</strong>
-            <span class="mono muted">{{ item.asset.slice(0, 20) }}…</span>
+            <div
+              v-if="item.photo_id"
+              class="photo-preview photo-preview-small"
+            >
+              <img :src="api.photoPreviewUrl(item.photo_id)" :alt="item.filename ?? ''" loading="lazy" />
+            </div>
+            <strong style="min-width: 130px">{{ formatTime(item.at) }}</strong>
+            <span class="grow">{{ item.filename ?? "unknown photo" }}</span>
           </div>
         </div>
       </div>

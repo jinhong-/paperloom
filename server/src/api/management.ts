@@ -13,6 +13,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { AssetStore } from "../assets/store.js";
 import type { Db } from "../db/index.js";
 import type { ScheduleService } from "../schedule/service.js";
+import { EVERY_DAY } from "../schedule/rules.js";
 
 export interface ManagementOptions {
   readonly db: Db;
@@ -327,6 +328,10 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
     const sourceHash = AssetStore.hash(source);
     const filename = body.filename ?? `${sourceHash.slice(0, 12)}.jpg`;
 
+    /* Keep the original so the gallery can show the photo the owner
+     * uploaded, rather than only the panel's rendering of it. */
+    await assets.putSource(sourceHash, source);
+
     const { renderAsset } = await import("../image.js");
     const rendered = await renderAsset(source);
 
@@ -361,8 +366,55 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
     });
   });
 
-  app.delete(`${basePath}/photos/:id`, async (request, reply) => {
+  /**
+   * The original upload behind a photo.
+   *
+   * This is what the gallery preview shows: the photo as the owner
+   * uploaded it, rather than the panel's six-colour rendering of it.
+   */
+  app.get(`${basePath}/photos/:id/preview`, async (request, reply) => {
     const userId = await requireUser(request, reply);
+    if (userId === null) return;
+
+    const { id } = request.params as { id: string };
+    const photo = db
+      .prepare(
+        `SELECT p.source_hash, p.filename FROM photos p
+         JOIN galleries g ON g.id = p.gallery_id
+         WHERE p.id = ? AND g.user_id = ?`,
+      )
+      .get(Number(id), userId) as { source_hash: string; filename: string } | undefined;
+
+    if (!photo) {
+      await reply.code(404).send({ error: "unknown photo" });
+      return;
+    }
+
+    const bytes = await assets.getSource(photo.source_hash);
+    if (!bytes) {
+      await reply.code(404).send({ error: "the original is not available" });
+      return;
+    }
+
+    /* The browser sniffs the type anyway, but sending the real one lets it
+     * render without downloading the whole file first. */
+    const extension = photo.filename.toLowerCase().split(".").pop() ?? "";
+    const contentType =
+      extension === "png"
+        ? "image/png"
+        : extension === "gif"
+          ? "image/gif"
+          : extension === "webp"
+            ? "image/webp"
+            : "image/jpeg";
+
+    await reply
+      .header("Content-Type", contentType)
+      .header("Cache-Control", "private, max-age=3600")
+      .send(bytes);
+  });
+
+  app.delete(`${basePath}/photos/:id`, async (request, reply) => {    const userId = await requireUser(request, reply);
     if (userId === null) return;
 
     const { id } = request.params as { id: string };
@@ -503,6 +555,176 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
   });
 
   /**
+   * The time zones the server knows about.
+   *
+   * The list comes from the runtime, which uses the same IANA database as
+   * the browser. The UI normally uses the browser's own list, but this
+   * one is there for a client that wants the server's view.
+   */
+  app.get(`${basePath}/timezones`, async (_request, reply) => {
+    const zones = Intl.supportedValuesOf
+      ? Intl.supportedValuesOf("timeZone")
+      : ["UTC"];
+    await reply.send({ timezones: zones });
+  });
+
+  /**
+   * The time-based check-in rules of a device.
+   */
+  app.get(`${basePath}/devices/:id/sync-rules`, async (request, reply) => {
+    const userId = await requireUser(request, reply);
+    if (userId === null) return;
+
+    const { id } = request.params as { id: string };
+    const device = db
+      .prepare("SELECT id FROM devices WHERE id = ? AND user_id = ?")
+      .get(Number(id), userId);
+    if (!device) {
+      await reply.code(404).send({ error: "unknown device" });
+      return;
+    }
+
+    const rules = schedules.rulesFor(Number(id));
+    await reply.send(
+      rules.map((rule) => ({
+        id: rule.id,
+        days: rule.days,
+        start_minute: rule.startMinute,
+        end_minute: rule.endMinute,
+        sync_interval: rule.syncInterval,
+        priority: rule.priority,
+      })),
+    );
+  });
+
+  /**
+   * Add a check-in rule.
+   */
+  app.post(`${basePath}/devices/:id/sync-rules`, async (request, reply) => {
+    const userId = await requireUser(request, reply);
+    if (userId === null) return;
+
+    const { id } = request.params as { id: string };
+    const device = db
+      .prepare("SELECT id FROM devices WHERE id = ? AND user_id = ?")
+      .get(Number(id), userId);
+    if (!device) {
+      await reply.code(404).send({ error: "unknown device" });
+      return;
+    }
+
+    const body = request.body as Partial<{
+      days: number;
+      start_minute: number;
+      end_minute: number;
+      sync_interval: number;
+      priority: number;
+    }>;
+
+    const days = body.days ?? EVERY_DAY;
+    const startMinute = body.start_minute ?? 0;
+    const endMinute = body.end_minute ?? 1440;
+    const syncInterval = body.sync_interval ?? 3600;
+    const priority = body.priority ?? 0;
+
+    if (days < 0 || days > EVERY_DAY) {
+      await reply.code(400).send({ error: "days must be a bit mask of the days of the week" });
+      return;
+    }
+    if (startMinute < 0 || startMinute > 1440 || endMinute < 0 || endMinute > 1440) {
+      await reply.code(400).send({ error: "the times must be minutes from midnight" });
+      return;
+    }
+    if (syncInterval < 60) {
+      await reply.code(400).send({ error: "the interval must be at least 60 seconds" });
+      return;
+    }
+
+    const result = db
+      .prepare(
+        `INSERT INTO device_sync_rules
+           (device_id, days, start_minute, end_minute, sync_interval, priority)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(Number(id), days, startMinute, endMinute, syncInterval, priority);
+
+    await reply.send({ id: Number(result.lastInsertRowid) });
+  });
+
+  /**
+   * Change a check-in rule.
+   */
+  app.patch(`${basePath}/devices/:id/sync-rules/:ruleId`, async (request, reply) => {
+    const userId = await requireUser(request, reply);
+    if (userId === null) return;
+
+    const { id, ruleId } = request.params as { id: string; ruleId: string };
+    const device = db
+      .prepare("SELECT id FROM devices WHERE id = ? AND user_id = ?")
+      .get(Number(id), userId);
+    if (!device) {
+      await reply.code(404).send({ error: "unknown device" });
+      return;
+    }
+
+    const rule = db
+      .prepare("SELECT id FROM device_sync_rules WHERE id = ? AND device_id = ?")
+      .get(Number(ruleId), Number(id));
+    if (!rule) {
+      await reply.code(404).send({ error: "unknown rule" });
+      return;
+    }
+
+    const body = request.body as Partial<{
+      days: number;
+      start_minute: number;
+      end_minute: number;
+      sync_interval: number;
+      priority: number;
+    }>;
+
+    const fields: string[] = [];
+    const values: unknown[] = [];
+    for (const key of ["days", "start_minute", "end_minute", "sync_interval", "priority"]) {
+      const value = (body as Record<string, unknown>)[key];
+      if (value === undefined) continue;
+      fields.push(`${key} = ?`);
+      values.push(value);
+    }
+    if (fields.length > 0) {
+      db.prepare(
+        `UPDATE device_sync_rules SET ${fields.join(", ")} WHERE id = ? AND device_id = ?`,
+      ).run(...values, Number(ruleId), Number(id));
+    }
+
+    await reply.send({ status: "ok" });
+  });
+
+  /**
+   * Remove a check-in rule.
+   */
+  app.delete(`${basePath}/devices/:id/sync-rules/:ruleId`, async (request, reply) => {
+    const userId = await requireUser(request, reply);
+    if (userId === null) return;
+
+    const { id, ruleId } = request.params as { id: string; ruleId: string };
+    const device = db
+      .prepare("SELECT id FROM devices WHERE id = ? AND user_id = ?")
+      .get(Number(id), userId);
+    if (!device) {
+      await reply.code(404).send({ error: "unknown device" });
+      return;
+    }
+
+    db.prepare("DELETE FROM device_sync_rules WHERE id = ? AND device_id = ?").run(
+      Number(ruleId),
+      Number(id),
+    );
+
+    await reply.send({ status: "ok" });
+  });
+
+  /**
    * The schedule a device would currently receive.
    *
    * Useful for previewing the server's policy without a device attached.
@@ -521,12 +743,28 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
     }
 
     const window = schedules.getForDevice(Number(id), Date.now());
+
+    /* The photo behind each asset, so the owner sees which picture is
+     * going to be shown rather than a hash. */
+    const photos = db
+      .prepare(
+        `SELECT id, content_hash, filename FROM photos
+         WHERE content_hash IS NOT NULL`,
+      )
+      .all() as Array<{ id: number; content_hash: string; filename: string }>;
+    const photoByHash = new Map(photos.map((p) => [p.content_hash, p]));
+
     await reply.send({
       revision: window.revision,
-      items: window.items.map((item) => ({
-        at: new Date(item.at).toISOString(),
-        asset: item.asset,
-      })),
+      items: window.items.map((item) => {
+        const photo = photoByHash.get(item.asset);
+        return {
+          at: new Date(item.at).toISOString(),
+          asset: item.asset,
+          filename: photo?.filename ?? null,
+          photo_id: photo?.id ?? null,
+        };
+      }),
     });
   });
 

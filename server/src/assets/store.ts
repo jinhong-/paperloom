@@ -5,6 +5,10 @@
  * database holds the metadata; the bytes live on disk under a sharded
  * directory so that a single directory never holds tens of thousands of
  * entries.
+ *
+ * The original upload is kept as well, under its own hash. The rendered
+ * asset is what the frame shows, but the original is what the owner
+ * recognises, and it is what the preview in the gallery shows.
  */
 
 import { createHash } from "node:crypto";
@@ -28,6 +32,7 @@ export class AssetStore {
   constructor(
     private readonly db: Db,
     private readonly root: string,
+    private readonly sourceRoot: string,
   ) {}
 
   /**
@@ -38,6 +43,14 @@ export class AssetStore {
   pathFor(contentHash: string): string {
     const safe = contentHash.replace(/[^a-f0-9]/gi, "");
     return join(this.root, safe.slice(0, 2), safe.slice(2, 4), safe);
+  }
+
+  /**
+   * The on-disk path for an original upload.
+   */
+  sourcePathFor(sourceHash: string): string {
+    const safe = sourceHash.replace(/[^a-f0-9]/gi, "");
+    return join(this.sourceRoot, safe.slice(0, 2), safe.slice(2, 4), safe);
   }
 
   /**
@@ -70,11 +83,40 @@ export class AssetStore {
   }
 
   /**
+   * Store an original upload.
+   *
+   * The file is named after the hash of its contents, so the same photo
+   * uploaded twice is stored once.
+   */
+  async putSource(sourceHash: string, data: Buffer): Promise<void> {
+    const target = this.sourcePathFor(sourceHash);
+    await mkdir(dirname(target), { recursive: true });
+
+    const existing = await stat(target).catch(() => null);
+    if (existing !== null) return;
+
+    const temp = `${target}.${process.pid}.tmp`;
+    await writeFile(temp, data);
+    await rename(temp, target);
+  }
+
+  /**
    * Read an asset's bytes.
    */
   async get(contentHash: string): Promise<Buffer | null> {
     try {
       return await readFile(this.pathFor(contentHash));
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Read an original upload's bytes.
+   */
+  async getSource(sourceHash: string): Promise<Buffer | null> {
+    try {
+      return await readFile(this.sourcePathFor(sourceHash));
     } catch {
       return null;
     }
