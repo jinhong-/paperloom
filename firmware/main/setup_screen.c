@@ -19,7 +19,8 @@
  *     |                                  |
  *     |          [QR code]              |
  *     |                                  |
- *     |   Scan to finish setup           |
+ *     |   Scan the code or open the     |
+ *     |   address to finish setup       |
  *     +----------------------------------+
  */
 
@@ -43,8 +44,33 @@ static const char *TAG = "setup_screen";
  * cover the outermost pixels of the image, and there is a border of a
  * slightly different shade around the active area. The margin is
  * generous so that nothing important is close enough to the edge to be
- * lost or clipped. */
-#define MARGIN 100
+ * lost or clipped.
+ *
+ * The margin also sets how wide a line of text can be. At this margin
+ * there is room for 27 characters at twice the base size, and 13 at four
+ * times, which is what the network name and the passphrase need. */
+#define MARGIN 140
+
+/**
+ * Draw text at the largest scale that still fits between the margins.
+ *
+ * The network name and the passphrase are drawn large so that they can
+ * be read from across a room, but a long one would otherwise run off
+ * the side of the panel. This steps the size down until the text fits,
+ * so that a long name is shown smaller rather than being cut off.
+ *
+ * @param scale The largest scale to try.
+ */
+static void draw_text_fitting(uint8_t *buffer, int width, int height, int y, const char *text,
+                              uint8_t color, int scale) {
+    const int available = width - 2 * MARGIN;
+
+    while (scale > 1 && measure_text(text, scale) > available) {
+        scale--;
+    }
+
+    draw_text_centered(buffer, width, height, y, text, color, scale);
+}
 
 void setup_screen_draw(uint8_t *buffer, const setup_screen_info_t *info) {
     const int width = PANEL_WIDTH;
@@ -59,26 +85,25 @@ void setup_screen_draw(uint8_t *buffer, const setup_screen_info_t *info) {
     draw_text_centered(buffer, width, height, y, "Paperloom", EPD_COLOR_BLACK, 4);
     y += FONT_HEIGHT * 4 + 30;
 
-    draw_text_centered(buffer, width, height, y, "This frame needs to be set up", EPD_COLOR_BLACK,
-                       2);
+    draw_text_centered(buffer, width, height, y, "This frame needs setting up", EPD_COLOR_BLACK, 2);
     y += FONT_HEIGHT * 2 + 50;
 
     /* The network name. */
     draw_text_centered(buffer, width, height, y, "Join this network", EPD_COLOR_BLACK, 2);
     y += FONT_HEIGHT * 2 + 16;
 
-    draw_text_centered(buffer, width, height, y, info->ssid, EPD_COLOR_BLACK, 4);
-    y += FONT_HEIGHT * 4 + 40;
+    draw_text_fitting(buffer, width, height, y, info->ssid, EPD_COLOR_BLACK, 4);
+    y += FONT_HEIGHT * 4 + 36;
 
     /* The passphrase. */
     draw_text_centered(buffer, width, height, y, "Password", EPD_COLOR_BLACK, 2);
     y += FONT_HEIGHT * 2 + 16;
 
-    draw_text_centered(buffer, width, height, y, info->password, EPD_COLOR_BLACK, 4);
-    y += FONT_HEIGHT * 4 + 50;
+    draw_text_fitting(buffer, width, height, y, info->password, EPD_COLOR_BLACK, 4);
+    y += FONT_HEIGHT * 4 + 40;
 
     /* The QR code, centred. */
-    const int qr_size = 560;
+    const int qr_size = 460;
     const int qr_x = (width - qr_size) / 2;
     const int qr_y = y;
 
@@ -88,14 +113,17 @@ void setup_screen_draw(uint8_t *buffer, const setup_screen_info_t *info) {
         draw_text_centered(buffer, width, height, qr_y + qr_size / 2, "Open the address above",
                            EPD_COLOR_BLACK, 2);
     }
-    y = qr_y + qr_size + 40;
+    y = qr_y + qr_size + 32;
 
     /* The address, for anyone whose camera will not read the code. */
     draw_text_centered(buffer, width, height, y, info->setup_url, EPD_COLOR_BLACK, 2);
-    y += FONT_HEIGHT * 2 + 24;
+    y += FONT_HEIGHT * 2 + 18;
 
-    draw_text_centered(buffer, width, height, y, "Scan the code or open the address to finish setup",
-                       EPD_COLOR_BLACK, 2);
+    /* Two lines, because the whole message does not fit on one. */
+    draw_text_centered(buffer, width, height, y, "Scan the code or open the", EPD_COLOR_BLACK, 2);
+    y += FONT_HEIGHT * 2 + 8;
+
+    draw_text_centered(buffer, width, height, y, "address to finish setup", EPD_COLOR_BLACK, 2);
 
     ESP_LOGI(TAG, "Drew the setup screen");
 }
@@ -146,5 +174,5 @@ void setup_screen_draw_claim(uint8_t *buffer, const char *claim_code, const char
     /* The claim code, in case the QR code cannot be scanned. */
     draw_text_centered(buffer, width, height, y, "Or enter this code", EPD_COLOR_BLACK, 2);
     y += FONT_HEIGHT * 2 + 12;
-    draw_text_centered(buffer, width, height, y, claim_code, EPD_COLOR_BLACK, 3);
+    draw_text_fitting(buffer, width, height, y, claim_code, EPD_COLOR_BLACK, 3);
 }
