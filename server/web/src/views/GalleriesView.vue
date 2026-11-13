@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from "vue";
 
 import { api, type Gallery, type Photo } from "@/api";
+import { describeInterval } from "@/lib/syncRules";
 import { useSessionStore } from "@/stores/session";
 
 const session = useSessionStore();
@@ -170,8 +171,8 @@ onMounted(async () => {
               {{ item.photo_count }} photo{{ item.photo_count === 1 ? "" : "s" }} ·
               {{ item.rotation_mode }}
               <template v-if="item.rotation_mode === 'random'">
-                · every {{ formatInterval(item.min_interval) }}–{{
-                  formatInterval(item.max_interval)
+                · every {{ describeInterval(item.min_interval) }}–{{
+                  describeInterval(item.max_interval)
                 }}
               </template>
             </div>
@@ -205,11 +206,13 @@ onMounted(async () => {
           <div class="field">
             <label for="gallery-min">Minimum gap (seconds)</label>
             <input id="gallery-min" v-model.number="newMin" type="number" min="60" />
+            <div class="small muted">That is every {{ describeInterval(newMin) }}.</div>
           </div>
         </div>
         <div class="field">
           <label for="gallery-max">Maximum gap (seconds)</label>
           <input id="gallery-max" v-model.number="newMax" type="number" min="60" />
+          <div class="small muted">That is every {{ describeInterval(newMax) }}.</div>
         </div>
         <button @click="createGallery">Create gallery</button>
       </div>
@@ -277,21 +280,3 @@ onMounted(async () => {
     </div>
   </div>
 </template>
-
-<script lang="ts">
-import { defineComponent } from "vue";
-
-export default defineComponent({
-  methods: {
-    /**
-     * Render a number of seconds as a human-readable interval.
-     */
-    formatInterval(seconds: number): string {
-      if (seconds < 60) return `${seconds}s`;
-      if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
-      if (seconds < 86400) return `${(seconds / 3600).toFixed(seconds % 3600 === 0 ? 0 : 1)}h`;
-      return `${(seconds / 86400).toFixed(1)}d`;
-    },
-  },
-});
-</script>

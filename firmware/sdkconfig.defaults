@@ -55,13 +55,71 @@ CONFIG_FATFS_CODEPAGE_437=y
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
 
+# --- The clock that keeps time while the frame is asleep --------------------
+# The frame spends nearly all its life asleep, and it is woken by a timer on
+# the slow clock. The slow clock has to be the one the timer is told to
+# count, or the frame wakes at the wrong time.
+#
+# The default is the 150 kHz internal RC oscillator, whose frequency drifts
+# with temperature and which the timer does not measure accurately. The
+# 8 MHz oscillator divided by 256 gives about 33 kHz, is far steadier, and
+# is what the wake-up timer counts against.
+#
+# The board has no 32 kHz crystal, so this is the best of what it has.
+# The internal 150 kHz RC oscillator is what the reference project for
+# this board uses, and the wake-up timer counts against it correctly.
+#
+# The 8 MHz oscillator divided by 256 is steadier, but the chip switches
+# the slow clock to it only for the duration of the sleep, and the timer
+# is set against the frequency measured before that switch, so the frame
+# wakes at the wrong time.
+CONFIG_RTC_CLK_SRC_INT_RC=y
+# CONFIG_RTC_CLK_SRC_EXT_CRYS is not set
+# CONFIG_RTC_CLK_SRC_EXT_OSC is not set
+# CONFIG_RTC_CLK_SRC_INT_8MD256 is not set
+
+# --- Console -------------------------------------------------------------
+# The console is the UART on GPIO43/44, which is what the CH340 on the
+# board is wired to.
+#
+# There is no secondary console. The secondary console would be the
+# USB-Serial-JTAG port, and choosing it would switch the USB-Serial-JTAG
+# module on: it cannot be turned off while the secondary console is that
+# port.
+#
+# The board does not use the chip's native USB, and with the module
+# enabled its connection monitor assumes a host is present and keeps the
+# 48 MHz clock running, which costs power and gets in the way of a
+# proper deep sleep.
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+# CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG is not set
+# CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG is not set
+# CONFIG_USJ_ENABLE_USB_SERIAL_JTAG is not set
+
 # --- Watchdog ---------------------------------------------------------
+# The task watchdog is off.
+#
+# The wake-up timer in the deep sleep is armed by the chip itself, and the
+# task watchdog fights with it: the frame wakes early, the watchdog has
+# not been fed, and the chip is reset. The IDF's own deep-sleep test
+# turns the task watchdog off for the same reason.
+CONFIG_ESP_TASK_WDT_EN=n
+# CONFIG_ESP_TASK_WDT_INIT is not set
+
 # A deep-sleep wake is close to a reboot, and the Wi-Fi connect can take a
 # while. Give the task watchdog enough room.
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
 
 # --- Compiler ---------------------------------------------------------
-CONFIG_COMPILER_OPTIMIZATION_PERF=y
+# The build is not optimised for size or speed.
+#
+# The frame's deep sleep depends on the wake stub and the RTC's fast
+# memory, and those only behave properly in a debug build. An optimised
+# build leaves the frame waking after a fixed moment, whatever time it
+# was asked to sleep for.
+CONFIG_COMPILER_OPTIMIZATION_DEBUG=y
+CONFIG_COMPILER_OPTIMIZATION_DEFAULT=y
+CONFIG_COMPILER_OPTIMIZATION_LEVEL_DEBUG=y
 
 # --- Task stacks ------------------------------------------------------
 # The default 3584-byte main task stack is not enough for this firmware:

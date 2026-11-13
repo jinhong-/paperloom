@@ -218,6 +218,14 @@ export interface MaterializeInput {
   readonly deviceId: string;
   readonly windowStart: number;
   /**
+   * The end of the window the events are planned for.
+   *
+   * This is not always the same as the lookahead: a frame that sleeps for
+   * a long stretch has to be given a plan that reaches through the sleep,
+   * or it wakes to find that its schedule has run out.
+   */
+  readonly windowEnd?: number;
+  /**
    * The time the schedule is being built for.
    *
    * The window start is aligned to the sync interval and so is usually a
@@ -251,19 +259,18 @@ export function materializeSchedule(input: MaterializeInput): DisplayEvent[] {
   if (candidates.length === 0 || galleries.length === 0) return [];
 
   const rng = new Rng(seedFor(deviceId, windowStart));
-  const windowEnd = windowStart + policy.lookahead * 1000;
+  const windowEnd = input.windowEnd ?? windowStart + policy.lookahead * 1000;
 
   const events: DisplayEvent[] = [];
 
   /* The first event is placed at the window start, so that a device which
    * has just woken and has nothing cached still gets an image to show.
    *
-   * The window start is aligned to the sync interval, so it is usually a
-   * little in the past by the time the device asks. The event is moved up
-   * to now rather than left behind, because an event in the past is one
-   * the device will never show: it only tells the device what is coming
-   * up. */
-  let cursor = Math.max(windowStart, input.now ?? windowStart);
+   * The window start is aligned to the span, so it may be a little in the
+   * past by the time the device asks. An event in the past is one the
+   * device will never show, and the device is only told about the events
+   * that are still to come. */
+  let cursor = windowStart;
   let lastPhotoId = input.lastPhotoId;
   let currentAsset = input.currentAsset;
 

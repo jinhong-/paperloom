@@ -4,6 +4,7 @@ import { computed, onMounted, ref } from "vue";
 import { api, type Device, type ScheduleItem, type SyncRule } from "@/api";
 import { DAY_NAMES, DAY_SHORT } from "@/lib/dayNames";
 import {
+  countWithUnit,
   describeDays,
   describeInterval,
   daysMask,
@@ -188,6 +189,9 @@ async function removeRule(rule: SyncRule): Promise<void> {
 
 /**
  * Format a timestamp for display.
+ *
+ * The time is always in the 24-hour form, whatever the browser's locale
+ * says, so that it matches the times the rules are written in.
  */
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleString(undefined, {
@@ -195,19 +199,45 @@ function formatTime(iso: string): string {
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
+    hour12: false,
   });
 }
 
 /**
  * Describe how long ago a timestamp was.
+ *
+ * The units are spelled out in the same way as the intervals of the rules,
+ * so that the page reads as one piece of English.
  */
 function formatSeen(iso: string | null): string {
   if (!iso) return "never";
   const seconds = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
   if (seconds < 60) return "just now";
-  if (seconds < 3600) return `${Math.round(seconds / 60)} min ago`;
-  if (seconds < 86400) return `${Math.round(seconds / 3600)} h ago`;
-  return `${Math.round(seconds / 86400)} days ago`;
+  if (seconds < 3600) return `${countWithUnit(Math.round(seconds / 60), "minute")} ago`;
+  if (seconds < 86400) return `${countWithUnit(Math.round(seconds / 3600), "hour")} ago`;
+  return `${countWithUnit(Math.round(seconds / 86400), "day")} ago`;
+}
+
+/**
+ * Whether a time field holds a clock time we understand.
+ *
+ * The fields are free text so that the clock is always 24-hour, whatever
+ * the browser's locale says. A native time picker would show "10:00 pm"
+ * next to the "08:00-22:00" of the rule list above it.
+ */
+function timeIsValid(text: string): boolean {
+  return parseMinute(text) !== null;
+}
+
+/**
+ * Normalise a time field once it is edited.
+ *
+ * "8:5" becomes "08:05", so that the field shows the same thing the rule
+ * list shows.
+ */
+function normaliseTime(text: string): string {
+  const minute = parseMinute(text);
+  return minute === null ? text : formatMinute(minute);
 }
 
 const batteryPercent = computed(() => {
@@ -221,13 +251,21 @@ const batteryPercent = computed(() => {
  * The rules, in a form that is easy to read.
  */
 const describedRules = computed(() =>
-  rules.value.map((rule) => ({
-    ...rule,
-    daysText: describeDays(rule.days),
-    startText: formatMinute(rule.start_minute),
-    endText: formatMinute(rule.end_minute),
-    intervalText: describeInterval(rule.sync_interval),
-  })),
+  rules.value.map((rule) => {
+    const daysText = describeDays(rule.days);
+    return {
+      ...rule,
+      daysText,
+      startText: formatMinute(rule.start_minute),
+      endText: formatMinute(rule.end_minute),
+      intervalText: describeInterval(rule.sync_interval),
+      /* The times and the interval as one string, so that they are
+       * separated from the days by a space. Whitespace written between two
+       * elements of a template is condensed away, and "Every day" would
+       * otherwise run into the time that follows it. */
+      detailText: ` ${formatMinute(rule.start_minute)}–${formatMinute(rule.end_minute)} · every ${describeInterval(rule.sync_interval)}`,
+    };
+  }),
 );
 
 onMounted(async () => {
@@ -342,6 +380,7 @@ onMounted(async () => {
           <div class="small muted">
             How far ahead the server plans the display events. A longer window
             survives a failed check-in, and the plan stays the same for longer.
+            That is {{ describeInterval(lookahead) }} of planned events.
           </div>
         </div>
 
@@ -365,9 +404,7 @@ onMounted(async () => {
         >
           <div>
             <strong>{{ rule.daysText }}</strong>
-            <span class="muted">
-              {{ rule.startText }}–{{ rule.endText }} · every {{ rule.intervalText }}
-            </span>
+            <span class="muted">{{ rule.detailText }}</span>
           </div>
           <button class="danger" @click="removeRule(rule)">Remove</button>
         </div>
@@ -396,17 +433,38 @@ onMounted(async () => {
         <div class="grid-2">
           <div class="field">
             <label for="rule-start">From</label>
-            <input id="rule-start" v-model="ruleStart" type="time" />
+            <input
+              id="rule-start"
+              v-model="ruleStart"
+              type="text"
+              inputmode="numeric"
+              placeholder="08:00"
+              maxlength="5"
+              :class="{ invalid: !timeIsValid(ruleStart) }"
+              @blur="ruleStart = normaliseTime(ruleStart)"
+            />
           </div>
           <div class="field">
             <label for="rule-end">Until</label>
-            <input id="rule-end" v-model="ruleEnd" type="time" />
+            <input
+              id="rule-end"
+              v-model="ruleEnd"
+              type="text"
+              inputmode="numeric"
+              placeholder="22:00"
+              maxlength="5"
+              :class="{ invalid: !timeIsValid(ruleEnd) }"
+              @blur="ruleEnd = normaliseTime(ruleEnd)"
+            />
           </div>
+        </div>
+        <div class="small muted">
+          The clock is 24-hour, the same as the times in the rules above.
         </div>
         <div class="field">
           <label for="rule-interval">Check in every (seconds)</label>
           <input id="rule-interval" v-model.number="ruleInterval" type="number" min="60" />
-          <div class="small muted">{{ describeInterval(ruleInterval) }}</div>
+          <div class="small muted">That is every {{ describeInterval(ruleInterval) }}.</div>
         </div>
         <button @click="addRule">Add rule</button>
 

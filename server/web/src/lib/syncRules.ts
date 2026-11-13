@@ -59,6 +59,11 @@ export function describeDays(mask: number): string {
 
 /**
  * Format a minute-of-day as a clock time.
+ *
+ * The clock is always 24-hour, whatever the browser's locale says. The
+ * server, the firmware and the rules are all 24-hour, and a page that
+ * mixed the two would show "08:00-22:00" next to "10:00 pm" for the
+ * same rule.
  */
 export function formatMinute(minute: number): string {
   const hours = Math.floor(minute / 60);
@@ -68,6 +73,9 @@ export function formatMinute(minute: number): string {
 
 /**
  * Parse a clock time into minutes from midnight.
+ *
+ * Only the 24-hour form is accepted, so that what a person types and what
+ * the page shows are the same thing.
  */
 export function parseMinute(text: string): number | null {
   const match = /^(\d{1,2}):(\d{2})$/.exec(text.trim());
@@ -79,14 +87,26 @@ export function parseMinute(text: string): number | null {
 }
 
 /**
+ * Count something with a unit, in a way that reads as English.
+ *
+ * "1 hour", "5 minutes", "1.5 hours". The unit is spelled out so that the
+ * list of rules reads as one piece of English rather than as a table of
+ * abbreviations.
+ */
+export function countWithUnit(value: number, unit: string): string {
+  const text = Number.isInteger(value) ? String(value) : value.toFixed(1);
+  return `${text} ${value === 1 ? unit : `${unit}s`}`;
+}
+
+/**
  * Describe how often a frame checks in, in a way a person can read.
+ *
+ * The same unit is used everywhere: seconds below a minute, minutes below
+ * an hour, hours below a day, and days above that.
  */
 export function describeInterval(seconds: number): string {
-  if (seconds < 60) return `${seconds} s`;
-  if (seconds < 3600) return `${Math.round(seconds / 60)} min`;
-  if (seconds < 86400) {
-    const hours = seconds / 3600;
-    return `${Number.isInteger(hours) ? hours : hours.toFixed(1)} h`;
-  }
-  return `${(seconds / 86400).toFixed(1)} days`;
+  if (seconds < 60) return countWithUnit(seconds, "second");
+  if (seconds < 3600) return countWithUnit(seconds / 60, "minute");
+  if (seconds < 86400) return countWithUnit(seconds / 3600, "hour");
+  return countWithUnit(seconds / 86400, "day");
 }

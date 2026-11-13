@@ -203,6 +203,15 @@ select:focus {
   border-color: var(--accent-dim);
 }
 
+/* A field that does not hold what it should. */
+input.invalid {
+  border-color: var(--danger);
+}
+
+input.invalid:focus {
+  border-color: var(--danger);
+}
+
 label {
   display: block;
   font-size: 13px;

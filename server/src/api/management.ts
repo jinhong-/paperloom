@@ -732,6 +732,27 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       return;
     }
 
+    /* A rule that is already there is not added a second time.
+     *
+     * Two identical rules cover exactly the same moments with the same
+     * interval, so the second one changes nothing about how the frame
+     * behaves. It only makes the list of rules harder to read, and makes
+     * the owner wonder which of the two is the one that matters. */
+    const existing = db
+      .prepare(
+        `SELECT id FROM device_sync_rules
+         WHERE device_id = ? AND days = ? AND start_minute = ? AND end_minute = ?
+           AND sync_interval = ? AND priority = ?`,
+      )
+      .get(Number(id), days, startMinute, endMinute, syncInterval, priority) as
+      | { id: number }
+      | undefined;
+
+    if (existing) {
+      await reply.send({ id: existing.id });
+      return;
+    }
+
     const result = db
       .prepare(
         `INSERT INTO device_sync_rules
@@ -783,6 +804,54 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       fields.push(`${key} = ?`);
       values.push(value);
     }
+
+    /* Changing a rule must not turn it into a copy of another one.
+     *
+     * The same reasoning as when a rule is added: two identical rules
+     * cover the same moments with the same interval, so the second one
+     * changes nothing and only makes the list harder to read. */
+    if (fields.length > 0) {
+      const current = db
+        .prepare(
+          `SELECT days, start_minute, end_minute, sync_interval, priority
+           FROM device_sync_rules WHERE id = ? AND device_id = ?`,
+        )
+        .get(Number(ruleId), Number(id)) as {
+          days: number;
+          start_minute: number;
+          end_minute: number;
+          sync_interval: number;
+          priority: number;
+        };
+
+      const merged = { ...current };
+      for (const [key, value] of Object.entries(body as Record<string, unknown>)) {
+        if (value === undefined) continue;
+        if (key in merged) (merged as Record<string, unknown>)[key] = value;
+      }
+
+      const duplicate = db
+        .prepare(
+          `SELECT id FROM device_sync_rules
+           WHERE device_id = ? AND days = ? AND start_minute = ? AND end_minute = ?
+             AND sync_interval = ? AND priority = ? AND id != ?`,
+        )
+        .get(
+          Number(id),
+          merged.days,
+          merged.start_minute,
+          merged.end_minute,
+          merged.sync_interval,
+          merged.priority,
+          Number(ruleId),
+        ) as { id: number } | undefined;
+
+      if (duplicate) {
+        await reply.code(409).send({ error: "an identical rule already exists" });
+        return;
+      }
+    }
+
     if (fields.length > 0) {
       db.prepare(
         `UPDATE device_sync_rules SET ${fields.join(", ")} WHERE id = ? AND device_id = ?`,

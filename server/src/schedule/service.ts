@@ -66,6 +66,12 @@ export class ScheduleService {
    * and so a new set of times and photos, every time the device checked
    * in. The device would be told one thing and then another, and the
    * plan it was following would never be the plan it was given.
+   *
+   * The window also reaches far enough to cover the frame's longest sleep.
+   * A frame that checks in every five minutes during the day and sleeps
+   * from ten at night until eight in the morning must be given a plan that
+   * reaches through the night, or it wakes in the small hours with nothing
+   * to show. See `coverageSpan`.
    */
   getForDevice(deviceId: number, now: number): ScheduleWindow {
     const device = this.db
@@ -76,8 +82,22 @@ export class ScheduleService {
     if (!device) throw new Error(`unknown device ${deviceId}`);
 
     const policy = this.policyFor(deviceId);
-    const windowStart = this.alignWindowStart(now, policy.lookahead);
-    const windowEnd = windowStart + policy.lookahead * 1000;
+    /* The window is a period of time, aligned so that successive windows
+     * tile the timeline without gaps or overlaps.
+     *
+     * The period is the span the plan has to cover: the frame's longest
+     * sleep plus the time it asks for. The window is aligned to that
+     * period, so that a plan stays the same for the whole of it. A frame
+     * that retries a sync is then given the schedule it was given the
+     * first time.
+     *
+     * The end is aligned rather than the start, so that the window always
+     * reaches forward from the frame by the whole of the span. The frame
+     * is somewhere inside the period, and the plan has to cover it from
+     * where it is. */
+    const span = this.coverageSpan(deviceId, policy);
+    const windowEnd = this.alignWindowEnd(now + span * 1000, span);
+    const windowStart = windowEnd - span * 1000;
 
     // Serve a previously materialised window if one exists.
     const stored = this.db
@@ -95,6 +115,67 @@ export class ScheduleService {
     }
 
     return this.materializeForDevice(deviceId, windowStart, windowEnd, policy, device);
+  }
+
+  /**
+   * How far ahead the plan has to reach, in seconds.
+   *
+   * The plan must cover the frame until it next checks in, because that is
+   * the moment it wakes and asks for a new plan. If the plan stops short
+   * of that, the frame wakes to find that its schedule has run out and it
+   * has nothing to show.
+   *
+   * The frame's longest sleep is the longest stretch that no rule covers,
+   * because a frame with nothing to check in for sleeps until a rule
+   * covers the time again. The rules repeat every week, so the longest
+   * such stretch is found by looking at a week.
+   *
+   * The span is a property of the rules and the policy, and not of the
+   * moment the schedule is asked for. That matters: a schedule must be the
+   * same every time it is asked for within its window, so that a device
+   * that retries a sync is given the schedule it was given the first time.
+   */
+  private coverageSpan(deviceId: number, policy: DevicePolicy): number {
+    const rules = this.rulesFor(deviceId);
+    const lookahead = policy.lookahead;
+
+    /* With no rules there is nothing to plan for at all, and the frame
+     * never checks in. The lookahead on its own is as far as the plan can
+     * usefully reach. */
+    if (rules.length === 0) return lookahead;
+
+    /* The longest stretch that no rule covers, in seconds.
+     *
+     * The rules repeat every week, so a week of minutes is enough to see
+     * every gap, including the one that runs over the end of the week. */
+    const minutesInWeek = 7 * 24 * 60;
+    let longestGap = 0;
+    let gapStart = -1;
+
+    for (let minute = 0; minute < minutesInWeek; minute++) {
+      const day = Math.floor(minute / (24 * 60)) % 7;
+      const minuteOfDay = minute % (24 * 60);
+
+      if (resolveInterval(rules, day, minuteOfDay) === null) {
+        if (gapStart < 0) gapStart = minute;
+      } else if (gapStart >= 0) {
+        longestGap = Math.max(longestGap, minute - gapStart);
+        gapStart = -1;
+      }
+    }
+    if (gapStart >= 0) {
+      longestGap = Math.max(longestGap, minutesInWeek - gapStart);
+    }
+
+    /* The frame wakes at the start of the next rule, and then asks for a
+     * window of its own. The plan has to reach through that whole window,
+     * or the frame wakes to a plan that has already run out. */
+    const span = longestGap * 60 + lookahead;
+
+    /* A plan longer than a week is of no use: the rules repeat every week,
+     * so there is nothing new to plan beyond that, and the device would
+     * have to hold far more than it can. */
+    return Math.min(span, minutesInWeek * 60);
   }
 
   /**
@@ -117,6 +198,7 @@ export class ScheduleService {
     const items = materializeSchedule({
       deviceId: String(deviceId),
       windowStart,
+      windowEnd,
       now: Date.now(),
       candidates,
       galleries,
@@ -171,10 +253,24 @@ export class ScheduleService {
 
   /**
    * Align a timestamp to the start of its sync window.
+   *
+   * The window is aligned to its own length, so that successive windows
+   * tile the timeline without gaps or overlaps. Aligning it to the
+   * lookahead instead would leave the windows overlapping once the window
+   * is longer than the lookahead, and the same event would then be planned
+   * twice.
    */
-  private alignWindowStart(now: number, lookahead: number): number {
-    const interval = Math.max(1, lookahead) * 1000;
+  private alignWindowStart(now: number, span: number): number {
+    const interval = Math.max(1, span) * 1000;
     return Math.floor(now / interval) * interval;
+  }
+
+  /**
+   * The next moment on the grid, at or after the given time.
+   */
+  private alignWindowEnd(now: number, span: number): number {
+    const interval = Math.max(1, span) * 1000;
+    return Math.ceil(now / interval) * interval;
   }
 
   /**

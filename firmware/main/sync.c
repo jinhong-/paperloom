@@ -326,6 +326,42 @@ static bool s_clock_rejected = false;
  */
 static bool s_claimed = false;
 
+/* Where the flag is kept.
+ *
+ * A frame that has been claimed is enrolled for good. It keeps that
+ * knowledge across a sleep, so that it does not have to ask the server
+ * about it every time it wakes. */
+#define NVS_KEY_CLAIMED "claimed"
+
+/**
+ * Record that the device has been claimed.
+ */
+static void claimed_store(void) {
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) != ESP_OK) {
+        return;
+    }
+    nvs_set_u8(nvs, NVS_KEY_CLAIMED, 1);
+    nvs_commit(nvs);
+    nvs_close(nvs);
+}
+
+/**
+ * Read the flag back after a sleep.
+ */
+static void claimed_restore(void) {
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
+        return;
+    }
+    uint8_t claimed = 0;
+    if (nvs_get_u8(nvs, NVS_KEY_CLAIMED, &claimed) == ESP_OK && claimed != 0) {
+        s_claimed = true;
+        ESP_LOGI(TAG, "This device was claimed before the sleep");
+    }
+    nvs_close(nvs);
+}
+
 /**
  * Whether the device still has to enrol.
  *
@@ -359,6 +395,10 @@ esp_err_t sync_init(void) {
     if (err != ESP_OK) {
         return err;
     }
+
+    /* Whether the device has been claimed is kept in flash, so that a
+     * waking frame does not have to ask. */
+    claimed_restore();
 
     if (s_server_url[0] == '\0') {
         ESP_LOGW(TAG, "No server URL configured; the device is not set up");
@@ -443,6 +483,7 @@ bool sync_enrol(char *claim_code, size_t claim_code_len, char *claim_url, size_t
     if (now_claimed) {
         ESP_LOGI(TAG, "The server says this device is claimed");
         s_claimed = true;
+        claimed_store();
         return true;
     }
 
@@ -1054,6 +1095,7 @@ sync_result_t process_sync_response(const char *json, size_t len) {
     if (!s_claimed) {
         ESP_LOGI(TAG, "The server has claimed this device");
         s_claimed = true;
+        claimed_store();
     }
 
     /* Where the owner goes to add photos. */

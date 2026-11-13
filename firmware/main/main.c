@@ -181,7 +181,9 @@ static int64_t run_cycle(wake_reason_t reason) {
     int64_t now_ms = 0;
     time_now(&now_ms);
 
-    ESP_LOGI(TAG, "Waking: reason=%d now=%lld", (int)reason, (long long)now_ms);
+    ESP_LOGI(TAG, "Waking: reason=%d now=%lld cause=%d causes=0x%x", (int)reason,
+             (long long)now_ms, (int)esp_sleep_get_wakeup_cause(),
+             (unsigned int)esp_sleep_get_wakeup_causes());
 
     /* The reset button.
      *
@@ -457,6 +459,10 @@ void app_main(void) {
     ESP_ERROR_CHECK(err);
 
     board_init();
+
+    /* The power management is set up once, here, and not changed
+     * afterwards. */
+    power_configure();
 
     /* The e-paper holds its image without power, so the order of these
      * calls matters: bring up storage and the network, do the work, then

@@ -25,6 +25,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "nvs.h"
 
 #include "time.h"
 
@@ -35,6 +36,45 @@ static int64_t s_time_offset_ms = 0;
 
 /* Whether the clock has ever been anchored to the server. */
 static bool s_time_valid = false;
+
+/* Where the offset is kept.
+ *
+ * The offset has to survive a deep sleep. A frame spends most of its life
+ * asleep, and a frame that wakes up not knowing what time it is has to
+ * ask the server before it can do anything, which costs a request every
+ * time it wakes. */
+#define NVS_NAMESPACE "paperloom"
+#define NVS_KEY_TIME_OFFSET "time_offset"
+
+/**
+ * Write the offset to flash.
+ */
+static void time_offset_store(void) {
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) != ESP_OK) {
+        return;
+    }
+    nvs_set_i64(nvs, NVS_KEY_TIME_OFFSET, s_time_offset_ms);
+    nvs_commit(nvs);
+    nvs_close(nvs);
+}
+
+/**
+ * Read the offset back after a sleep.
+ */
+static void time_offset_restore(void) {
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
+        return;
+    }
+    int64_t stored = 0;
+    if (nvs_get_i64(nvs, NVS_KEY_TIME_OFFSET, &stored) == ESP_OK) {
+        s_time_offset_ms = stored;
+        s_time_valid = true;
+        ESP_LOGI(TAG, "The clock was anchored before the sleep");
+    }
+    nvs_close(nvs);
+}
 
 /**
  * Initialise the clock.
@@ -51,6 +91,12 @@ esp_err_t time_init(void) {
 
     int64_t now = (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
     ESP_LOGI(TAG, "Clock initialised at %lld", (long long)now);
+
+    /* The offset from before the sleep is still good: the real-time
+     * clock keeps running through a deep sleep, so the correction it
+     * needed has not changed much. */
+    time_offset_restore();
+
     return ESP_OK;
 }
 
@@ -107,6 +153,7 @@ esp_err_t time_set_from_server(int64_t server_time_ms) {
     int64_t raw = now - s_time_offset_ms;
     s_time_offset_ms = server_time_ms - raw;
     s_time_valid = true;
+    time_offset_store();
 
     ESP_LOGI(TAG, "Clock corrected by %lld ms", (long long)s_time_offset_ms);
     return ESP_OK;
@@ -121,6 +168,14 @@ esp_err_t time_set_from_server(int64_t server_time_ms) {
 void time_invalidate(void) {
     s_time_valid = false;
     s_time_offset_ms = 0;
+
+    /* The offset is no good, so it is forgotten. */
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) == ESP_OK) {
+        nvs_erase_key(nvs, NVS_KEY_TIME_OFFSET);
+        nvs_commit(nvs);
+        nvs_close(nvs);
+    }
 }
 
 /**

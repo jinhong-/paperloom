@@ -181,11 +181,14 @@ esp_err_t board_wifi_connect(void) {
     }
 
     /* The station config holds the SSID and password in fixed-size
-     * arrays, so they are copied rather than pointed at. */
+     * arrays, so they are copied rather than pointed at.
+     *
+     * The copies are bounded, so a name that is too long is cut short
+     * rather than overflowing the array. */
     wifi_config_t config;
     memset(&config, 0, sizeof(config));
-    snprintf((char *)config.sta.ssid, sizeof(config.sta.ssid), "%s", ssid);
-    snprintf((char *)config.sta.password, sizeof(config.sta.password), "%s", password);
+    memcpy((char *)config.sta.ssid, ssid, strnlen(ssid, sizeof(config.sta.ssid) - 1));
+    memcpy((char *)config.sta.password, password, strnlen(password, sizeof(config.sta.password) - 1));
     config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));

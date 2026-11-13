@@ -626,3 +626,112 @@ test("a schedule built before the policy changes is not reused", async (t) => {
     `the next sync must follow the new interval, got ${gap} ms`,
   );
 });
+
+test("a frame that retries gets the same schedule", async (t) => {
+  const server = await makeServer();
+  t.after(async () => {
+    await server.app.close();
+  });
+
+  const { galleryId } = await seedGallery(server);
+  const db = server.db;
+
+  const deviceId = `dev-${randomUUID()}`;
+  const keys = generateKeyPair();
+
+  db.prepare(
+    `INSERT INTO devices (name, device_id, public_key, state, user_id)
+     VALUES ('d', ?, ?, 'claimed', NULL)`,
+  ).run(deviceId, publicKeyToBase64(keys.publicKeyPem));
+
+  const deviceRowId = (
+    db.prepare("SELECT id FROM devices WHERE device_id = ?").get(deviceId) as { id: number }
+  ).id;
+  db.prepare("INSERT INTO device_galleries (device_id, gallery_id) VALUES (?, ?)").run(
+    deviceRowId,
+    galleryId,
+  );
+  db.prepare(
+    `INSERT INTO device_policies (device_id, sync_interval, lookahead) VALUES (?, 3600, 10800)`,
+  ).run(deviceRowId);
+  db.prepare(
+    `INSERT INTO device_sync_rules
+       (device_id, days, start_minute, end_minute, sync_interval, priority)
+     VALUES (?, 127, 480, 1320, 300, 0)`,
+  ).run(deviceRowId);
+
+  const schedules = new ScheduleService(db, server.assets);
+
+  const first = schedules.getForDevice(deviceRowId, Date.now());
+  /* A moment later, as if the frame had not got the first answer and
+   * asked again. */
+  const second = schedules.getForDevice(deviceRowId, Date.now() + 45_000);
+
+  assert.equal(second.revision, first.revision, "the schedule must not change");
+  assert.deepEqual(second.items, first.items, "the events must not change");
+});
+
+test("the schedule reaches through the frame's longest sleep", async (t) => {
+  const server = await makeServer();
+  t.after(async () => {
+    await server.app.close();
+  });
+
+  const { galleryId } = await seedGallery(server);
+  const db = server.db;
+
+  const deviceId = `dev-${randomUUID()}`;
+  const keys = generateKeyPair();
+
+  db.prepare(
+    `INSERT INTO devices (name, device_id, public_key, state, user_id)
+     VALUES ('d', ?, ?, 'claimed', NULL)`,
+  ).run(deviceId, publicKeyToBase64(keys.publicKeyPem));
+
+  const deviceRowId = (
+    db.prepare("SELECT id FROM devices WHERE device_id = ?").get(deviceId) as { id: number }
+  ).id;
+  db.prepare("INSERT INTO device_galleries (device_id, gallery_id) VALUES (?, ?)").run(
+    deviceRowId,
+    galleryId,
+  );
+  db.prepare(
+    `INSERT INTO device_policies (device_id, sync_interval, lookahead) VALUES (?, 3600, 10800)`,
+  ).run(deviceRowId);
+
+  /* One rule, covering the daytime only.
+   *
+   * Nothing covers the night, so the frame has nothing to check in for
+   * between ten at night and eight in the morning, and sleeps for those
+   * ten hours. The plan it is given has to reach through that sleep, or
+   * the frame wakes in the small hours to find that its schedule has run
+   * out and it has nothing to show. */
+  db.prepare(
+    `INSERT INTO device_sync_rules
+       (device_id, days, start_minute, end_minute, sync_interval, priority)
+     VALUES (?, 127, 480, 1320, 300, 0)`,
+  ).run(deviceRowId);
+
+  const schedules = new ScheduleService(db, server.assets);
+  const now = Date.now();
+  const window = schedules.getForDevice(deviceRowId, now);
+
+  /* The window must reach past the end of the sleep, and past the
+   * lookahead that the frame asks for when it wakes. */
+  const span = window.items.length > 0
+    ? window.items[window.items.length - 1]!.at - now
+    : 0;
+
+  assert.ok(
+    span >= 10 * 3600_000,
+    `the plan must cover the ten-hour sleep, got ${span} ms of cover`,
+  );
+
+  /* The events must be spread across the night rather than bunched at the
+   * start, so that the frame has something to show when it wakes. */
+  const during = window.items.filter((item) => item.at > now + 6 * 3600_000);
+  assert.ok(
+    during.length > 0,
+    "the plan must hold events for the small hours, not just the evening",
+  );
+});

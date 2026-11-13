@@ -34,6 +34,13 @@ static const char *TAG = "schedule";
 
 #define NVS_NAMESPACE "paperloom"
 #define NVS_KEY_NEXT_EVENT "next_event"
+/* The last event that was shown, so that it is not shown again.
+ *
+ * A panel refresh takes a quarter of a minute and flashes the panel, and
+ * a panel has a limited number of refreshes in its life. An event that
+ * has been shown must therefore never be shown twice, however many times
+ * the frame wakes. */
+#define NVS_KEY_SHOWN_EVENT "shown_evt"
 #define NVS_KEY_REVISION "sched_rev"
 #define NVS_KEY_DISPLAYED "displayed"
 
@@ -46,6 +53,20 @@ static schedule_event_t s_events[SCHEDULE_MAX_EVENTS];
 static size_t s_event_count = 0;
 static char s_revision[72] = {0};
 static char s_displayed[72] = {0};
+
+/* The time of the last event that was shown.
+ *
+ * A panel refresh takes a quarter of a minute and flashes the panel, and
+ * a panel has a limited number of refreshes in its life. An event that
+ * has been shown must therefore never be shown again, however many times
+ * the frame wakes.
+ *
+ * The events in a schedule are in order, so one number is enough to
+ * remember them all: an event has been shown if its time is at or before
+ * this one. There are often two events waiting at once, and remembering
+ * only the last of them would let the frame alternate between them,
+ * showing each one again and again. */
+static int64_t s_last_shown_at_ms = 0;
 
 /**
  * Rebuild the event list from a parsed JSON document.
@@ -155,7 +176,13 @@ esp_err_t schedule_init(void) {
     nvs_handle_t nvs;
     if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) == ESP_OK) {
         size_t n = sizeof(s_displayed);
-        if (nvs_get_str(nvs, NVS_KEY_DISPLAYED, s_displayed, &n) != ESP_OK) {
+        int64_t shown = 0;
+    if (nvs_get_i64(nvs, NVS_KEY_SHOWN_EVENT, &shown) == ESP_OK) {
+        s_last_shown_at_ms = shown;
+    }
+
+    n = sizeof(s_displayed);
+    if (nvs_get_str(nvs, NVS_KEY_DISPLAYED, s_displayed, &n) != ESP_OK) {
             s_displayed[0] = '\0';
         }
         nvs_close(nvs);
@@ -252,6 +279,42 @@ schedule_status_t schedule_due_event(schedule_event_t *out) {
 }
 
 /**
+ * Whether an event has already been shown.
+ *
+ * The events in a schedule are in order, so an event has been shown if
+ * its time is at or before the time of the last one shown.
+ */
+static bool event_was_shown(const schedule_event_t *event) {
+    if (s_last_shown_at_ms == 0) {
+        /* Nothing has been shown yet. */
+        return false;
+    }
+
+    return event->at_ms <= s_last_shown_at_ms;
+}
+
+/**
+ * Record that an event has been shown.
+ *
+ * The time is kept in flash, because the frame sleeps for long stretches
+ * and comes back to a schedule that still holds the events it has
+ * already shown.
+ */
+static void event_mark_shown(const schedule_event_t *event) {
+    if (event->at_ms > s_last_shown_at_ms) {
+        s_last_shown_at_ms = event->at_ms;
+    }
+
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) != ESP_OK) {
+        return;
+    }
+    nvs_set_i64(nvs, NVS_KEY_SHOWN_EVENT, s_last_shown_at_ms);
+    nvs_commit(nvs);
+    nvs_close(nvs);
+}
+
+/**
  * The first event whose time has arrived and whose photo is not already
  * on the panel.
  *
@@ -276,6 +339,11 @@ schedule_status_t schedule_next_unseen_event(schedule_event_t *out) {
         if (s_events[i].at_ms > now) {
             continue;
         }
+        if (event_was_shown(&s_events[i])) {
+            /* This one has been shown already. Showing it again would
+             * cost a panel refresh for nothing. */
+            continue;
+        }
         if (s_displayed[0] != '\0' && strcmp(s_events[i].asset_hash, s_displayed) == 0) {
             /* This one is already on the panel. */
             continue;
@@ -294,7 +362,14 @@ schedule_status_t schedule_next_unseen_event(schedule_event_t *out) {
  * check-in.
  */
 esp_err_t schedule_mark_displayed(const char *hash, int64_t at_ms) {
-    (void)at_ms;
+    /* The event is marked as shown, so that it is not shown again. */
+    for (size_t i = 0; i < s_event_count; i++) {
+        if (s_events[i].at_ms == at_ms) {
+            event_mark_shown(&s_events[i]);
+            break;
+        }
+    }
+
 
     snprintf(s_displayed, sizeof(s_displayed), "%s", hash);
 
