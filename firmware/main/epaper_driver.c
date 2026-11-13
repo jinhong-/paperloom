@@ -309,35 +309,42 @@ static void send_init_sequence(void) {
 /**
  * Write one half of the image through one chip select.
  *
- * The panel shows the rows bottom to top: the first row it receives is
- * the bottom of the picture. Our frame buffer is in the ordinary order,
- * top to bottom, so the rows are sent in reverse.
+ * The panel reads each row right to left, so the bytes of a row are sent
+ * in reverse. The two pixels in a byte keep their places: the panel's
+ * right-to-left reading is in whole pixels, not half of one.
  *
- * The columns are sent in the order they are in the frame buffer, and the
- * first chip select takes the left half of the row.
+ * This is the same as the vendor's own packing:
+ *
+ *     int new_x = (EPD_WIDTH - 2 - x); // From right to left
+ *     int new_index = (y * Width) + (new_x / 2);
+ *     num[new_index] = (color1 << 4) | color2;
+ *
+ * which puts the pair of pixels at x into the byte at (EPD_WIDTH-2-x)/2,
+ * so the row ends up with its bytes in the opposite order.
+ *
+ * The vendor then splits that row and sends the first half to the first
+ * chip select. The first half is the *right* of the picture, because the
+ * row was reversed, so the first chip select shows the right and the
+ * second the left.
  *
  * @param image     The full frame buffer.
  * @param cs_index  0 for the first chip select, 1 for the second.
- * @param half      0 for the left half of the row, 1 for the right.
+ * @param half      0 for the first half of the reversed row, 1 for the second.
  */
 static void send_image_half(const uint8_t *image, int cs_index, int half) {
     uint8_t line_buf[HALF_ROW_BYTES];
 
     cs_select(cs_index, 0);
     write_command(DTM);
-    for (uint16_t i = 0; i < PANEL_HEIGHT; i++) {
-        /* The panel shows the rows bottom to top. */
-        uint16_t row = (uint16_t)(PANEL_HEIGHT - 1 - i);
+    for (uint16_t row = 0; row < PANEL_HEIGHT; row++) {
         const uint8_t *src = image + (size_t)row * PANEL_ROW_STRIDE_BYTES;
 
-        /* The first chip select takes the left half of the row. */
-        size_t offset = (size_t)half * HALF_ROW_BYTES;
+        /* The first half of the reversed row is the last half of ours,
+         * read backwards. The pixels within each byte keep their places. */
+        size_t start = half == 0 ? PANEL_ROW_STRIDE_BYTES - HALF_ROW_BYTES : 0;
 
-        /* The panel reads the row right to left, so the bytes go out
-         * backwards, with the two pixels in each byte swapped. */
         for (size_t j = 0; j < HALF_ROW_BYTES; j++) {
-            uint8_t b = src[offset + HALF_ROW_BYTES - 1 - j];
-            line_buf[j] = (uint8_t)((b << 4) | (b >> 4));
+            line_buf[j] = src[start + HALF_ROW_BYTES - 1 - j];
         }
 
         spi_write_data(line_buf, HALF_ROW_BYTES);
