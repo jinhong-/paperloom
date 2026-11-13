@@ -85,6 +85,12 @@ const char *schedule_revision(void);
 size_t schedule_event_count(void);
 
 /**
+ * The time the last event in the schedule is due, or zero if the
+ * schedule is empty.
+ */
+int64_t schedule_ends_at_ms(void);
+
+/**
  * The asset hash of the event at an index, or NULL if out of range.
  */
 const char *schedule_asset_at(size_t index);

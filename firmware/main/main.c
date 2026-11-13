@@ -227,6 +227,18 @@ static int64_t run_cycle(wake_reason_t reason) {
         sync_due = true;
     }
 
+    /* The frame checks in when its schedule runs out, as well as when the
+     * server says it is due.
+     *
+     * The server's time is a hint: it was given when the frame last
+     * checked in, and the rules may have changed since. The schedule the
+     * frame holds is the thing that must not run out, because a frame
+     * with nothing left to show has nothing to show. */
+    int64_t schedule_ends_at = schedule_ends_at_ms();
+    if (schedule_ends_at == 0 || now_ms >= schedule_ends_at) {
+        sync_due = true;
+    }
+
     /* A device that has not been claimed always checks in. It has nothing
      * to show until the owner claims it, and it is waiting to hear that
      * they have. */

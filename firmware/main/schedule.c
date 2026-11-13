@@ -408,6 +408,29 @@ size_t schedule_event_count(void) {
 }
 
 /**
+ * The time the last event in the schedule is due.
+ *
+ * The frame checks in when its schedule runs out, because then it has
+ * nothing to show and needs a new plan. Without that, a frame whose
+ * schedule had been made under different rules would keep to a plan that
+ * no longer applies, and would not notice for as long as the plan said to
+ * wait.
+ */
+int64_t schedule_ends_at_ms(void) {
+    if (s_event_count == 0) {
+        return 0;
+    }
+
+    int64_t last = 0;
+    for (size_t i = 0; i < s_event_count; i++) {
+        if (s_events[i].at_ms > last) {
+            last = s_events[i].at_ms;
+        }
+    }
+    return last;
+}
+
+/**
  * The asset hash of the event at an index, or NULL.
  */
 const char *schedule_asset_at(size_t index) {
