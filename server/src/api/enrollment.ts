@@ -24,6 +24,7 @@ import { randomInt } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import type { Db } from "../db/index.js";
+import { EVERY_DAY } from "../schedule/rules.js";
 
 export interface EnrollmentOptions {
   readonly db: Db;
@@ -168,6 +169,35 @@ export function registerEnrollmentApi(app: FastifyInstance, options: EnrollmentO
         body.panel_width ?? 1200,
         body.panel_height ?? 1600,
       );
+    }
+
+    /* A new frame comes with rules already set.
+     *
+     * There is no default interval: a frame that no rule covers has
+     * nothing to check in for, and sleeps until a rule covers the time
+     * again. A frame with no rules would therefore never check in, and
+     * would never show anything.
+     *
+     * The rules are the ones a frame would sensibly start with: awake
+     * and responsive while somebody is around, and asleep overnight.
+     * The owner can change them from the management page. */
+    if (!existing) {
+      const newId = db.prepare("SELECT id FROM devices WHERE device_id = ?").get(body.device_id) as
+        | { id: number }
+        | undefined;
+
+      if (newId) {
+        const addRule = db.prepare(
+          `INSERT INTO device_sync_rules
+             (device_id, days, start_minute, end_minute, sync_interval, priority)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        );
+
+        /* The hours when somebody is likely to be looking at the frame. */
+        addRule.run(newId.id, EVERY_DAY, 8 * 60, 22 * 60, 300, 0);
+        /* The rest of the day, and the small hours. */
+        addRule.run(newId.id, EVERY_DAY, 22 * 60, 8 * 60, 3600, 1);
+      }
     }
 
     await reply.send({

@@ -229,19 +229,6 @@ const describedRules = computed(() =>
   })),
 );
 
-/**
- * The rule that covers everything.
- *
- * This is the frame's default: what it does when no other rule applies.
- * It is a rule like any other, so there is only one thing to understand.
- */
-const defaultRule = computed(() => ({
-  daysText: "Every day",
-  startText: "00:00",
-  endText: "00:00",
-  intervalText: describeInterval(syncInterval.value),
-}));
-
 onMounted(async () => {
   await session.reload();
   timezone.value = browserZone;
@@ -365,20 +352,8 @@ onMounted(async () => {
         </div>
 
         <div v-if="describedRules.length === 0" class="empty">
-          No rules yet. The frame checks in every
-          {{ describeInterval(syncInterval) }} all day. Add a rule to change
-          that at certain times.
-        </div>
-
-        <div
-          class="row between"
-          style="padding: 8px 0; border-bottom: 1px solid var(--line)"
-        >
-          <div>
-            <strong>{{ defaultRule.daysText }}</strong>
-            <span class="muted"> {{ defaultRule.intervalText }} &mdash; the default</span>
-          </div>
-          <span class="muted">Set below</span>
+          No rules. The frame has nothing to check in for, so it will stay
+          asleep. Add a rule to wake it up.
         </div>
 
         <div
@@ -433,17 +408,6 @@ onMounted(async () => {
           <div class="small muted">{{ describeInterval(ruleInterval) }}</div>
         </div>
         <button @click="addRule">Add rule</button>
-
-        <h3 style="margin-top: 24px">The default</h3>
-        <div class="small muted">
-          What the frame does when no rule applies. This is the rule that
-          covers every day and the whole of it.
-        </div>
-        <div class="field">
-          <label for="default-interval">Check in every (seconds)</label>
-          <input id="default-interval" v-model.number="syncInterval" type="number" min="60" />
-          <div class="small muted">{{ describeInterval(syncInterval) }}</div>
-        </div>
 
         <hr style="margin: 24px 0; border: 0; border-top: 1px solid var(--line)" />
 

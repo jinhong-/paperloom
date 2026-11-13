@@ -212,10 +212,66 @@ export class ScheduleService {
    * This is the device's own interval unless one of its rules covers the
    * moment, in which case the rule's interval applies.
    */
-  intervalAt(deviceId: number, at: number): number {
+  intervalAt(deviceId: number, at: number): number | null {
     const policy = this.policyFor(deviceId);
     const { day, minute } = localDayAndMinute(at, policy.timezone);
-    return resolveInterval(this.rulesFor(deviceId), day, minute, policy.syncInterval);
+    return resolveInterval(this.rulesFor(deviceId), day, minute);
+  }
+
+  /**
+   * When the frame should next check in.
+   *
+   * This is the moment the next rule begins, or the next check-in if a
+   * rule already covers now.
+   *
+   * A frame with no rule covering the present has nothing to check in
+   * for, so it is told to come back when a rule starts rather than being
+   * left to guess.
+   */
+  nextCheckIn(deviceId: number, at: number): number {
+    const policy = this.policyFor(deviceId);
+    const rules = this.rulesFor(deviceId);
+    const { day, minute } = localDayAndMinute(at, policy.timezone);
+
+    const interval = resolveInterval(rules, day, minute);
+    if (interval !== null) {
+      return at + interval * 1000;
+    }
+
+    /* No rule covers now. Find the next moment one does. */
+    const next = this.nextRuleStart(rules, day, minute, policy.timezone);
+    return next ?? at + 60 * 60 * 1000;
+  }
+
+  /**
+   * The next moment a rule covers, or null if none ever does.
+   *
+   * The search looks a week ahead, which is enough because a rule names
+   * the days of the week it applies to.
+   */
+  private nextRuleStart(
+    rules: readonly SyncRule[],
+    day: number,
+    minute: number,
+    timezone: string,
+  ): number | null {
+    if (rules.length === 0) return null;
+
+    /* The current minute, in the frame's own zone, is what the rules are
+     * written against. The minute of the day it is now is not needed here;
+     * only the clock matters. */
+    const base = new Date();
+    base.setSeconds(0, 0);
+
+    for (let ahead = 0; ahead < 8 * 24 * 60; ahead++) {
+      const moment = new Date(base.getTime() + ahead * 60 * 1000);
+      const { day: d, minute: m } = localDayAndMinute(moment.getTime(), timezone);
+      if (resolveInterval(rules, d, m) !== null) {
+        return moment.getTime();
+      }
+    }
+
+    return null;
   }
 
   /**

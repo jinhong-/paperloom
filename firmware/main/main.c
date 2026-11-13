@@ -261,7 +261,12 @@ static int64_t run_cycle(wake_reason_t reason) {
             /* Anchor the clock before the first signed request. A device
              * that has never synced has no absolute time, and the server
              * rejects a request whose timestamp is outside its accepted
-             * window. */
+             * window.
+             *
+             * The same is true of a device whose clock has drifted: the
+             * server refuses the request and says why, and the clock is
+             * fetched again here so that the next attempt is made with a
+             * good one. */
             if (!time_is_valid()) {
                 ESP_LOGI(TAG, "The clock is not anchored yet; asking the server for the time");
                 if (!sync_fetch_server_time()) {
@@ -324,6 +329,22 @@ static int64_t run_cycle(wake_reason_t reason) {
                 }
             } else {
                 ESP_LOGW(TAG, "Sync failed; continuing with the cached schedule");
+
+                /* If the server refused the request because the clock was
+                 * out of the window it accepts, fetch the time and try
+                 * again straight away. Waiting for the next wake would
+                 * leave the frame showing nothing for as long as the
+                 * schedule says. */
+                if (sync_clock_was_rejected()) {
+                    ESP_LOGI(TAG, "Fetching the time again, because the clock was refused");
+                    if (sync_fetch_server_time()) {
+                        if (sync_perform(&now_ms) == SYNC_OK) {
+                            ESP_LOGI(TAG, "The retry worked");
+                        } else {
+                            ESP_LOGW(TAG, "The retry did not work either");
+                        }
+                    }
+                }
             }
         }
     }

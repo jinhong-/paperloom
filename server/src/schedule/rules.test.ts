@@ -76,10 +76,14 @@ test("a night rule on weekdays does not cover the weekend", () => {
   assert.equal(ruleCovers(night, 0, 3 * 60), false);
 });
 
-test("the fallback is used when no rule covers the moment", () => {
+test("no rule means there is nothing to check in for", () => {
   const daytime = rule({ startMinute: 8 * 60, endMinute: 22 * 60 });
-  assert.equal(resolveInterval([daytime], 1, 3 * 60, 900), 900);
-  assert.equal(resolveInterval([daytime], 1, 12 * 60, 900), 3600);
+  // Three in the morning: the rule does not cover it.
+  assert.equal(resolveInterval([daytime], 1, 3 * 60), null);
+  // Noon: the rule covers it.
+  assert.equal(resolveInterval([daytime], 1, 12 * 60), 3600);
+  // No rules at all.
+  assert.equal(resolveInterval([], 1, 12 * 60), null);
 });
 
 test("the lower priority number wins", () => {
@@ -87,7 +91,7 @@ test("the lower priority number wins", () => {
     rule({ id: 1, syncInterval: 60, priority: 5 }),
     rule({ id: 2, syncInterval: 600, priority: 1 }),
   ];
-  assert.equal(resolveInterval(rules, 1, 600, 3600), 600);
+  assert.equal(resolveInterval(rules, 1, 600), 600);
 });
 
 test("the more specific rule wins when the priorities are equal", () => {
@@ -105,9 +109,9 @@ test("the more specific rule wins when the priorities are equal", () => {
   ];
 
   // A weekday at noon: the weekday rule is more specific.
-  assert.equal(resolveInterval(rules, 1, 12 * 60, 3600), 300);
+  assert.equal(resolveInterval(rules, 1, 12 * 60), 300);
   // A Saturday at noon: only the all-day rule applies.
-  assert.equal(resolveInterval(rules, 6, 12 * 60, 3600), 1800);
+  assert.equal(resolveInterval(rules, 6, 12 * 60), 1800);
 });
 
 test("a day mask round-trips", () => {

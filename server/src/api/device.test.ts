@@ -592,11 +592,21 @@ test("a schedule built before the policy changes is not reused", async (t) => {
     "INSERT INTO sessions (token, user_id, expires_at) VALUES ('tok', ?, datetime('now', '+1 day'))",
   ).run(user.id);
 
+  /* The interval comes from the rules, so that is what is changed.
+   *
+   * The rule covers every day and the whole of it, so it applies at the
+   * moment of the check-in. */
   const changed = await server.app.inject({
-    method: "PATCH",
-    url: `/api/devices/${deviceRowId}/policy`,
+    method: "POST",
+    url: `/api/devices/${deviceRowId}/sync-rules`,
     headers: { cookie: "paperloom_session=tok" },
-    payload: { sync_interval: 120 },
+    payload: {
+      days: 127,
+      start_minute: 0,
+      end_minute: 0,
+      sync_interval: 120,
+      priority: 0,
+    },
   });
   assert.equal(changed.statusCode, 200);
 

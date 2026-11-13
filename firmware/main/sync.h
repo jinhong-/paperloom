@@ -92,7 +92,14 @@ bool sync_enrol(char *claim_code, size_t claim_code_len, char *claim_url, size_t
 /**
  * The claim code from the last enrolment.
  */
-const char *sync_claim_code(void);
+/**
+ * Whether the server refused the last request because the clock was out
+ * of the window it accepts.
+ *
+ * The caller uses this to fetch the time again and retry, rather than
+ * waiting for the next wake with a clock the server will not accept.
+ */
+bool sync_clock_was_rejected(void);
 
 /**
  * Whether the device still has to enrol with the server.

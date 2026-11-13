@@ -307,6 +307,17 @@ static char s_claim_url[160] = {0};
 static char s_dashboard_url[192] = {0};
 
 /**
+ * Whether the server last rejected a request because the clock was out
+ * of the window it accepts.
+ *
+ * The server checks the timestamp on a request against its own, and
+ * refuses one that is too far off. That happens when the frame's clock
+ * has drifted, or when it has been reset, and the frame cannot fix it on
+ * its own: it has to ask the server what the time is.
+ */
+static bool s_clock_rejected = false;
+
+/**
  * Whether the server has said this device is claimed.
  *
  * A device that has been claimed is enrolled for good. It keeps its
@@ -477,6 +488,17 @@ bool sync_enrol(char *claim_code, size_t claim_code_len, char *claim_url, size_t
         ESP_LOGI(TAG, "Enrolled; the claim code is %s", s_claim_code);
     }
     return ok;
+}
+
+/**
+ * Whether the server refused the last request because the clock was out
+ * of the window it accepts.
+ *
+ * The caller uses this to fetch the time again and retry, rather than
+ * waiting for the next wake with a clock the server will not accept.
+ */
+bool sync_clock_was_rejected(void) {
+    return s_clock_rejected;
 }
 
 /**
@@ -970,11 +992,28 @@ sync_result_t sync_perform(const int64_t *now_ms) {
     }
 
     size_t response_len = 32 * 1024;
-    esp_err_t err = signed_request("POST", "/api/device/sync", body, body_len, response,
-                                   &response_len);
+    int status = 0;
+    esp_err_t err = signed_request_status("POST", "/api/device/sync", body, body_len, response,
+                                          &response_len, &status);
     free(body);
 
     if (err != ESP_OK) {
+        free(response);
+        return SYNC_ERROR;
+    }
+
+    /* The server refuses a request whose timestamp is too far from its
+     * own. The frame's clock has drifted, or has been reset, and it
+     * cannot fix that on its own: it has to ask the server what the time
+     * is. Saying so here lets the next attempt start by fetching the
+     * time. */
+    if (status == 401 && strstr(response, "timestamp") != NULL) {
+        ESP_LOGW(TAG, "The server says the clock is out of the window it accepts");
+        s_clock_rejected = true;
+        time_invalidate();
+
+    /* The request was accepted, so the clock is fine. */
+    s_clock_rejected = false;
         free(response);
         return SYNC_ERROR;
     }

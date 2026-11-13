@@ -306,9 +306,10 @@ export function registerDeviceApi(app: FastifyInstance, options: DeviceApiOption
 
     const response: SyncResponse = {
       server_time: new Date(now).toISOString(),
-      // The interval depends on the time of day, so it is worked out for
-      // the moment of this check-in rather than taken from the policy.
-      next_sync_at: new Date(now + schedules.intervalAt(auth.id, now) * 1000).toISOString(),
+      // When the frame should check in again. This depends on the time of
+      // day, so it is worked out for the moment of this check-in rather
+      // than taken from the policy.
+      next_sync_at: new Date(schedules.nextCheckIn(auth.id, now)).toISOString(),
       // The device is only claimed if the owner has claimed it. Until
       // then it has to keep asking for a claim code.
       claimed: true,

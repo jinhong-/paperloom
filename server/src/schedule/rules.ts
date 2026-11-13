@@ -8,9 +8,11 @@
  * wait an hour between them.
  *
  * A rule says which days of the week it applies to, the time of day it
- * covers, and how often the frame should check in during that time. The
- * device's single `sync_interval` is the fallback for any moment that no
- * rule covers.
+ * covers, and how often the frame should check in during that time.
+ *
+ * There is no fallback. A frame that no rule covers has nothing to check
+ * in for, and sleeps until a rule covers the time again, so a frame
+ * comes with rules already set.
  */
 
 /** The days of the week, as the server stores them. */
@@ -161,8 +163,7 @@ export function resolveInterval(
   rules: readonly SyncRule[],
   day: number,
   minute: number,
-  fallback: number,
-): number {
+): number | null {
   let best: SyncRule | undefined;
 
   for (const rule of rules) {
@@ -178,7 +179,7 @@ export function resolveInterval(
     }
   }
 
-  return best ? best.syncInterval : fallback;
+  return best ? best.syncInterval : null;
 }
 
 /**
