@@ -298,6 +298,15 @@ static char s_claim_code[32] = {0};
 static char s_claim_url[160] = {0};
 
 /**
+ * Where the owner manages the frame.
+ *
+ * The server sends this with the schedule. The frame shows it when it has
+ * been claimed but has no photos to show yet, so that the owner knows
+ * where to go to add some.
+ */
+static char s_dashboard_url[192] = {0};
+
+/**
  * Whether the server has said this device is claimed.
  *
  * A device that has been claimed is enrolled for good. It keeps its
@@ -475,6 +484,13 @@ bool sync_enrol(char *claim_code, size_t claim_code_len, char *claim_url, size_t
  */
 const char *sync_claim_code(void) {
     return s_claim_code;
+}
+
+/**
+ * Where the owner manages the frame.
+ */
+const char *sync_dashboard_url(void) {
+    return s_dashboard_url;
 }
 
 /**
@@ -999,6 +1015,12 @@ sync_result_t process_sync_response(const char *json, size_t len) {
     if (!s_claimed) {
         ESP_LOGI(TAG, "The server has claimed this device");
         s_claimed = true;
+    }
+
+    /* Where the owner goes to add photos. */
+    cJSON *dashboard = cJSON_GetObjectItem(root, "dashboard_url");
+    if (cJSON_IsString(dashboard) && dashboard->valuestring != NULL) {
+        snprintf(s_dashboard_url, sizeof(s_dashboard_url), "%s", dashboard->valuestring);
     }
 
     /* Remember when to check in next. */

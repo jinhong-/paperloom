@@ -108,6 +108,14 @@ bool sync_needs_enrol(void);
 const char *sync_claim_url(void);
 
 /**
+ * Where the owner manages the frame.
+ *
+ * This is sent by the server with the schedule, and is shown on the panel
+ * when the frame has been claimed but has no photos to show yet.
+ */
+const char *sync_dashboard_url(void);
+
+/**
  * The device's public key, base64url encoded as the raw point.
  *
  * Used during enrollment.

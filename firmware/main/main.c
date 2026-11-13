@@ -43,6 +43,7 @@ static const char *TAG = "paperloom";
  */
 static char s_shown_claim_code[32] = {0};
 
+
 /**
  * How long the device waits between asking the server whether it has
  * been claimed.
@@ -96,15 +97,27 @@ static int64_t run_cycle(wake_reason_t reason) {
      *
      * The event that is due is the first one whose time has arrived, not
      * the first one that is still in the future: a frame that wakes up
-     * after the photo was due is exactly the case this is about. */
+     * after the photo was due is exactly the case this is about.
+     *
+     * This is worked out before the sync, and deliberately so. The server
+     * sends the events that are still to come, so a sync replaces the
+     * schedule and the event that has just arrived goes with it. Looking
+     * for it first is what keeps the photo from being lost. */
     bool display_due = false;
     schedule_event_t due_event;
-    if (schedule_due_event(&due_event) == SCHEDULE_OK) {
+    if (schedule_next_unseen_event(&due_event) == SCHEDULE_OK) {
         display_due = true;
     }
 
     bool sync_due = false;
     if (sync_is_due(&now_ms)) {
+        sync_due = true;
+    }
+
+    /* A device that has not been claimed always checks in. It has nothing
+     * to show until the owner claims it, and it is waiting to hear that
+     * they have. */
+    if (sync_needs_enrol()) {
         sync_due = true;
     }
 
@@ -184,12 +197,18 @@ static int64_t run_cycle(wake_reason_t reason) {
             }
 
             if (sync_perform(&now_ms) == SYNC_OK) {
-                /* The server may have replaced the schedule, and it may
-                 * have corrected the clock, so the due check is redone
-                 * against the current time rather than the one from the
-                 * top of the cycle. */
+                /* The server may have corrected the clock, so the due
+                 * check is redone against the current time rather than
+                 * the one from the top of the cycle.
+                 *
+                 * The event that was already found is kept, though. The
+                 * server sends the events that are still to come, so the
+                 * one that has just arrived is no longer in the schedule
+                 * the sync brought back. */
                 time_now(&now_ms);
-                if (schedule_due_event(&due_event) == SCHEDULE_OK) {
+                schedule_event_t later;
+                if (!display_due && schedule_next_unseen_event(&later) == SCHEDULE_OK) {
+                    due_event = later;
                     display_due = true;
                 }
             } else {
@@ -214,6 +233,18 @@ static int64_t run_cycle(wake_reason_t reason) {
             schedule_mark_displayed(due_event.asset_hash, due_event.at_ms);
         } else {
             ESP_LOGW(TAG, "Could not display the asset; keeping the current image");
+        }
+    } else if (schedule_event_count() == 0) {
+        /* The frame has been claimed but there is nothing to show,
+         * because no photos have been chosen yet.
+         *
+         * Saying so is better than leaving a blank panel, which looks
+         * like a fault. The screen points at the dashboard where the
+         * photos are added. */
+        if (!display_task_ready_shown()) {
+            ESP_LOGI(TAG, "There are no photos yet; showing the ready screen");
+            display_task_show_ready_screen(
+                sync_dashboard_url()[0] != '\0' ? sync_dashboard_url() : sync_server_url());
         }
     } else if (reason == WAKE_BUTTON && board_button_pressed(BUTTON_NEXT)) {
         /* The next-photo button skips ahead in the schedule without
@@ -337,19 +368,20 @@ void app_main(void) {
      * it far too late to be useful.
      *
      * Once it has been claimed it settles into the normal pattern: a
-     * cycle, then a long sleep. */
+     * cycle, then a long sleep.
+     *
+     * The cycle does the asking, so it is run again after the wait. The
+     * wait is skipped altogether as soon as the device has been claimed,
+     * which is what ends the loop. */
     while (sync_needs_enrol()) {
-        int64_t delay = run_cycle(reason);
+        ESP_LOGI(TAG, "Waiting for the device to be claimed");
+        vTaskDelay(pdMS_TO_TICKS(CLAIM_POLL_INTERVAL_MS));
 
-        if (delay > CLAIM_POLL_INTERVAL_MS) {
-            delay = CLAIM_POLL_INTERVAL_MS;
-        }
-        if (delay < 0) {
-            delay = CLAIM_POLL_INTERVAL_MS;
+        if (!sync_needs_enrol()) {
+            break;
         }
 
-        ESP_LOGI(TAG, "Waiting %lld ms for the device to be claimed", (long long)delay);
-        vTaskDelay(pdMS_TO_TICKS((uint32_t)delay));
+        run_cycle(reason);
     }
 
     int64_t delay = run_cycle(reason);

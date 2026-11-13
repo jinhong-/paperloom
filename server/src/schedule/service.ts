@@ -111,6 +111,7 @@ export class ScheduleService {
     const items = materializeSchedule({
       deviceId: String(deviceId),
       windowStart,
+      now: Date.now(),
       candidates,
       galleries,
       policy: { ...policy, timezone: device.timezone || policy.timezone },

@@ -15,6 +15,7 @@
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "nvs.h"
 #include "zlib.h"
 
 #include "app_config.h"
@@ -33,7 +34,50 @@ static uint8_t *s_frame = NULL;
 /* The panel needs a reset and init sequence before each update. */
 static bool s_panel_ready = false;
 
+/* Where the flag saying the ready screen has been shown is kept.
+ *
+ * It has to survive a restart, because the screen should be drawn once
+ * and not on every wake: a refresh of an e-paper panel takes a quarter
+ * of a minute and uses up the panel's life. */
+#define NVS_NAMESPACE "paperloom"
+#define NVS_KEY_READY_SHOWN "ready_shown"
+
+/**
+ * Whether the ready screen has been shown.
+ */
+static bool s_ready_shown = false;
+
+/**
+ * Read the flag back after a restart.
+ */
+static void ready_shown_restore(void) {
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
+        return;
+    }
+    uint8_t shown = 0;
+    if (nvs_get_u8(nvs, NVS_KEY_READY_SHOWN, &shown) == ESP_OK) {
+        s_ready_shown = shown != 0;
+    }
+    nvs_close(nvs);
+}
+
+/**
+ * Remember that the ready screen has been shown.
+ */
+static void ready_shown_store(void) {
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) != ESP_OK) {
+        return;
+    }
+    nvs_set_u8(nvs, NVS_KEY_READY_SHOWN, 1);
+    nvs_commit(nvs);
+    nvs_close(nvs);
+}
+
 esp_err_t display_task_init(void) {
+    ready_shown_restore();
+
     if (s_frame == NULL) {
         s_frame = heap_caps_malloc(PANEL_FRAME_BYTES, MALLOC_CAP_SPIRAM);
         if (s_frame == NULL) {
@@ -237,6 +281,35 @@ display_result_t display_task_show_claim_screen(const char *claim_code, const ch
     setup_screen_draw_claim(s_frame, claim_code, claim_url);
     epaper_display(s_frame);
     return DISPLAY_OK;
+}
+
+/**
+ * Show the screen shown once the frame has been claimed.
+ *
+ * The frame is working and belongs to the owner, but there is nothing to
+ * show until photos have been chosen.
+ */
+display_result_t display_task_show_ready_screen(const char *dashboard_url) {
+    if (s_frame == NULL) {
+        return DISPLAY_ERROR;
+    }
+
+    setup_screen_draw_ready(s_frame, dashboard_url);
+    epaper_display(s_frame);
+    s_ready_shown = true;
+    ready_shown_store();
+    return DISPLAY_OK;
+}
+
+/**
+ * Whether the ready screen has been shown.
+ *
+ * The frame shows it once, when it has been claimed but has no photos to
+ * show yet. It is not shown again: the panel is refreshed on every wake
+ * otherwise, which would use up its life for nothing.
+ */
+bool display_task_ready_shown(void) {
+    return s_ready_shown;
 }
 
 /**

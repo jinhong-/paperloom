@@ -480,9 +480,56 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
                 last_seen_at, created_at
          FROM devices WHERE user_id = ? ORDER BY name`,
       )
-      .all(userId);
+      .all(userId) as Array<Record<string, unknown> & { id: number }>;
 
-    await reply.send(devices);
+    /* The galleries a frame shows, and the policy that decides how it
+     * checks in, come with it.
+     *
+     * Without them the management page has to guess, and what it shows is
+     * not what the frame is actually doing. */
+    const galleryRows = db
+      .prepare("SELECT device_id, gallery_id FROM device_galleries")
+      .all() as Array<{ device_id: number; gallery_id: number }>;
+
+    const policyRows = db
+      .prepare(
+        `SELECT device_id, sync_interval, lookahead, quiet_start, quiet_end
+         FROM device_policies`,
+      )
+      .all() as Array<{
+      device_id: number;
+      sync_interval: number;
+      lookahead: number;
+      quiet_start: number | null;
+      quiet_end: number | null;
+    }>;
+
+    const galleriesByDevice = new Map<number, number[]>();
+    for (const row of galleryRows) {
+      const list = galleriesByDevice.get(row.device_id) ?? [];
+      list.push(row.gallery_id);
+      galleriesByDevice.set(row.device_id, list);
+    }
+
+    const policyByDevice = new Map(policyRows.map((row) => [row.device_id, row]));
+
+    await reply.send(
+      devices.map((device) => {
+        const policy = policyByDevice.get(device.id);
+        return {
+          ...device,
+          galleries: galleriesByDevice.get(device.id) ?? [],
+          policy: policy
+            ? {
+                sync_interval: policy.sync_interval,
+                lookahead: policy.lookahead,
+                quiet_start: policy.quiet_start,
+                quiet_end: policy.quiet_end,
+              }
+            : null,
+        };
+      }),
+    );
   });
 
   app.post(`${basePath}/devices/:id/galleries`, async (request, reply) => {
@@ -566,6 +613,14 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
         return;
       }
       db.prepare("UPDATE devices SET rotation = ? WHERE id = ?").run(body.rotation, Number(id));
+    }
+
+    /* The time zone is a property of the frame too: it says where the
+     * frame hangs, and the schedule is built against it. The policy keeps
+     * a copy as a fallback, but the frame's own value is the one that
+     * counts, so this is written to both. */
+    if (body.timezone !== undefined) {
+      db.prepare("UPDATE devices SET timezone = ? WHERE id = ?").run(body.timezone, Number(id));
     }
 
     const fields: string[] = [];

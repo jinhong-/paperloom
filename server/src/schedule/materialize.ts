@@ -217,6 +217,15 @@ export function localMinuteOfDay(epochMs: number, timezone = "UTC"): number {
 export interface MaterializeInput {
   readonly deviceId: string;
   readonly windowStart: number;
+  /**
+   * The time the schedule is being built for.
+   *
+   * The window start is aligned to the sync interval and so is usually a
+   * little in the past. The first event is placed at this time instead,
+   * so that a device which has just woken gets something to show at once
+   * rather than waiting for the next slot.
+   */
+  readonly now?: number;
   readonly candidates: readonly Candidate[];
   readonly galleries: readonly GalleryPolicy[];
   readonly policy: DevicePolicy;
@@ -245,7 +254,16 @@ export function materializeSchedule(input: MaterializeInput): DisplayEvent[] {
   const windowEnd = windowStart + policy.lookahead * 1000;
 
   const events: DisplayEvent[] = [];
-  let cursor = windowStart;
+
+  /* The first event is placed at the window start, so that a device which
+   * has just woken and has nothing cached still gets an image to show.
+   *
+   * The window start is aligned to the sync interval, so it is usually a
+   * little in the past by the time the device asks. The event is moved up
+   * to now rather than left behind, because an event in the past is one
+   * the device will never show: it only tells the device what is coming
+   * up. */
+  let cursor = Math.max(windowStart, input.now ?? windowStart);
   let lastPhotoId = input.lastPhotoId;
   let currentAsset = input.currentAsset;
 

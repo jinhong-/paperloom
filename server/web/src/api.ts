@@ -32,6 +32,13 @@ export interface Photo {
 }
 
 /** A device as the server returns it. */
+export interface DevicePolicy {
+  sync_interval: number;
+  lookahead: number;
+  quiet_start: number | null;
+  quiet_end: number | null;
+}
+
 export interface Device {
   id: number;
   name: string;
@@ -40,11 +47,16 @@ export interface Device {
   panel_width: number;
   panel_height: number;
   timezone: string;
+  rotation: number;
   battery_mv: number | null;
   firmware_version: string | null;
   displayed_asset: string | null;
   last_seen_at: string | null;
   created_at: string;
+  /** The galleries this frame shows. */
+  galleries: number[];
+  /** The policy that decides how it checks in. */
+  policy: DevicePolicy | null;
 }
 
 /** One scheduled display event. */

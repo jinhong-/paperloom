@@ -47,6 +47,16 @@ async function showSchedule(device: Device): Promise<void> {
   schedule.value = [];
   error.value = null;
   notice.value = null;
+
+  /* The galleries and the policy come with the frame, so that what is
+   * shown is what the frame is actually doing rather than a guess. */
+  deviceGalleries.value = new Set(device.galleries ?? []);
+  if (device.policy) {
+    syncInterval.value = device.policy.sync_interval;
+    lookahead.value = device.policy.lookahead;
+  }
+  timezone.value = device.timezone;
+
   try {
     const result = await api.schedule(device.id);
     schedule.value = result.items;

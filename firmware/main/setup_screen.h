@@ -49,6 +49,17 @@ void setup_screen_draw_error(uint8_t *buffer, const char *message);
  */
 void setup_screen_draw_claim(uint8_t *buffer, const char *claim_code, const char *claim_url);
 
+/**
+ * Draw the screen shown once the frame has been claimed.
+ *
+ * The frame is working and belongs to the owner, but there is nothing to
+ * show until photos have been chosen. The screen says so and points at
+ * the dashboard where the photos are added.
+ *
+ * @param dashboard_url The address of the dashboard.
+ */
+void setup_screen_draw_ready(uint8_t *buffer, const char *dashboard_url);
+
 #ifdef __cplusplus
 }
 #endif

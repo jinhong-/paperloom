@@ -252,6 +252,42 @@ schedule_status_t schedule_due_event(schedule_event_t *out) {
 }
 
 /**
+ * The first event whose time has arrived and whose photo is not already
+ * on the panel.
+ *
+ * The server keeps sending an event for a little while after its time,
+ * so that a frame whose clock is slightly behind does not miss it. That
+ * means the same event can be offered more than once. An event whose
+ * photo is already showing is skipped, so that the frame moves on to the
+ * next one rather than sitting on the same picture.
+ */
+schedule_status_t schedule_next_unseen_event(schedule_event_t *out) {
+    if (s_event_count == 0) {
+        return SCHEDULE_EMPTY;
+    }
+
+    int64_t now = 0;
+    extern esp_err_t time_now(int64_t *out_ms);
+    if (time_now(&now) != ESP_OK) {
+        now = 0;
+    }
+
+    for (size_t i = 0; i < s_event_count; i++) {
+        if (s_events[i].at_ms > now) {
+            continue;
+        }
+        if (s_displayed[0] != '\0' && strcmp(s_events[i].asset_hash, s_displayed) == 0) {
+            /* This one is already on the panel. */
+            continue;
+        }
+        *out = s_events[i];
+        return SCHEDULE_OK;
+    }
+
+    return SCHEDULE_EMPTY;
+}
+
+/**
  * Record that an asset was successfully applied to the panel.
  *
  * This is the device's actual state, which the server reads at the next

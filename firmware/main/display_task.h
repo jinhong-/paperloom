@@ -57,6 +57,25 @@ display_result_t display_task_show_setup_error(const char *message);
 display_result_t display_task_show_claim_screen(const char *claim_code, const char *claim_url);
 
 /**
+ * Show the screen shown once the frame has been claimed.
+ *
+ * The frame is working and belongs to the owner, but there is nothing to
+ * show until photos have been chosen.
+ *
+ * @param dashboard_url The address of the dashboard.
+ */
+display_result_t display_task_show_ready_screen(const char *dashboard_url);
+
+/**
+ * Whether the ready screen has been shown.
+ *
+ * The frame shows it once, when it has been claimed but has no photos to
+ * show yet. It is not shown again: the panel is refreshed on every wake
+ * otherwise, which would use up its life for nothing.
+ */
+bool display_task_ready_shown(void);
+
+/**
  * Power the panel down before sleeping.
  */
 void display_task_prepare_sleep(void);

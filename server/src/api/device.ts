@@ -15,6 +15,16 @@ import type { ScheduleService } from "../schedule/service.js";
 import { verifyDeviceRequest } from "./device-auth.js";
 
 /**
+ * How long an event is still sent after its time.
+ *
+ * The frame wakes at the time of the event, but its clock is a little
+ * behind the server's, so it asks for the schedule either side of the
+ * moment the event is due. The event is kept for a minute afterwards so
+ * that it is not dropped in that gap.
+ */
+const EVENT_GRACE_MS = 60 * 1000;
+
+/**
  * How many assets a frame on battery is given in one check-in.
  *
  * A frame on mains power can fetch everything it is missing at once. A
@@ -83,6 +93,15 @@ export interface SyncResponse {
    * device that has never been claimed needs to ask for a claim code.
    */
   readonly claimed: boolean;
+  /**
+   * Where the owner manages the frame.
+   *
+   * The frame shows this when it has been claimed but has no photos to
+   * show yet, so that the owner knows where to go. The server sends it
+   * rather than the frame working it out, so that the frame still knows
+   * where the dashboard is when the server is behind a path prefix.
+   */
+  readonly dashboard_url?: string;
   /**
    * The claim code, when the device is still waiting to be claimed.
    *
@@ -228,16 +247,28 @@ export function registerDeviceApi(app: FastifyInstance, options: DeviceApiOption
 
     const now = Date.now();
     const window = schedules.getForDevice(auth.id, now);
+
+    /* Where the owner manages the frame. The dashboard lives at the root
+     * of the server, so this is the address of the server itself. */
+    const dashboardUrl = `${basePath.replace(/\/api\/device$/, "")}/`;
     const policy = schedules.policyFor(auth.id);
 
-    // Only the events that are still to come.
-    //
-    // A frame is asleep for most of the time, and the schedule is built
-    // for a window that starts in the past. An event whose time has
-    // already passed is one the frame missed, and showing it now would
-    // show a photo late and out of order. A missed event is a missed
-    // event; the frame shows what is coming.
-    const upcoming = window.items.filter((item) => item.at > now);
+    /* Only the events that are still to come, and the one that has just
+     * arrived.
+     *
+     * A frame is asleep for most of the time, and the schedule is built
+     * for a window that starts in the past. An event whose time has
+     * long since passed is one the frame missed, and showing it now
+     * would show a photo late and out of order. A missed event is a
+     * missed event; the frame shows what is coming.
+     *
+     * The grace period covers the moment the event arrives. The frame
+     * wakes at the event's time, but its clock is a little behind the
+     * server's, so it asks for the schedule either side of the moment
+     * the event is due. Without the grace period the event would be
+     * dropped in the gap and the photo would never be shown. */
+    const grace = now - EVENT_GRACE_MS;
+    const upcoming = window.items.filter((item) => item.at > grace);
 
     // Which assets the device needs but does not yet have.
     //
@@ -281,6 +312,8 @@ export function registerDeviceApi(app: FastifyInstance, options: DeviceApiOption
       // The device is only claimed if the owner has claimed it. Until
       // then it has to keep asking for a claim code.
       claimed: true,
+      // Where the owner goes to add photos.
+      dashboard_url: dashboardUrl,
       schedule: {
         revision: window.revision,
         items: upcoming.map((item) => ({

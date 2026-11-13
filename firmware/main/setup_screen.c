@@ -176,3 +176,45 @@ void setup_screen_draw_claim(uint8_t *buffer, const char *claim_code, const char
     y += FONT_HEIGHT * 2 + 12;
     draw_text_fitting(buffer, width, height, y, claim_code, EPD_COLOR_BLACK, 3);
 }
+
+/**
+ * Draw the screen shown once the frame has been claimed.
+ *
+ * The frame is working and belongs to the owner now, but there is
+ * nothing to show yet because no photos have been chosen. The screen
+ * says so, and points at the dashboard where the photos are added.
+ */
+void setup_screen_draw_ready(uint8_t *buffer, const char *dashboard_url) {
+    const int width = PANEL_WIDTH;
+    const int height = PANEL_HEIGHT;
+
+    draw_fill_rect(buffer, width, height, 0, 0, width, height, EPD_COLOR_WHITE);
+
+    int y = MARGIN;
+
+    draw_text_centered(buffer, width, height, y, "Paperloom", EPD_COLOR_BLACK, 4);
+    y += FONT_HEIGHT * 4 + 30;
+
+    draw_text_centered(buffer, width, height, y, "This frame is ready", EPD_COLOR_BLACK, 2);
+    y += FONT_HEIGHT * 2 + 50;
+
+    /* The frame has nothing to show until photos have been chosen, so
+     * this is what the owner sees. Saying so is better than showing a
+     * blank screen, which looks like a fault. */
+    draw_text_centered(buffer, width, height, y, "Add some photos to", EPD_COLOR_BLACK, 2);
+    y += FONT_HEIGHT * 2 + 12;
+    draw_text_centered(buffer, width, height, y, "get it started", EPD_COLOR_BLACK, 2);
+    y += FONT_HEIGHT * 2 + 40;
+
+    const int qr_size = 460;
+    const int qr_x = (width - qr_size) / 2;
+    const int qr_y = y;
+
+    if (!qr_draw(buffer, width, height, qr_x, qr_y, qr_size, dashboard_url)) {
+        draw_text_centered(buffer, width, height, qr_y + qr_size / 2, dashboard_url, EPD_COLOR_BLACK,
+                           2);
+    }
+    y = qr_y + qr_size + 32;
+
+    draw_text_centered(buffer, width, height, y, "Open the dashboard", EPD_COLOR_BLACK, 2);
+}

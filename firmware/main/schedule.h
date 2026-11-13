@@ -54,6 +54,17 @@ schedule_status_t schedule_next_event(schedule_event_t *out);
 schedule_status_t schedule_due_event(schedule_event_t *out);
 
 /**
+ * The first event whose time has arrived and whose photo is not already
+ * on the panel.
+ *
+ * The server keeps sending an event for a little while after its time, so
+ * that a frame whose clock is slightly behind does not miss it. That
+ * means the same event can be offered more than once, and an event whose
+ * photo is already showing is skipped.
+ */
+schedule_status_t schedule_next_unseen_event(schedule_event_t *out);
+
+/**
  * Record that an asset was applied to the panel.
  */
 esp_err_t schedule_mark_displayed(const char *hash, int64_t at_ms);
