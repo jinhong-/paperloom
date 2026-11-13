@@ -26,7 +26,9 @@ import {
   RAW_FRAME_BYTES,
   THEORETICAL_RGB,
   diffusionKernel,
+  rotatedSize,
   type DitherAlgorithm,
+  type Rotation,
 } from "./panel.js";
 
 /**
@@ -111,9 +113,13 @@ function delinearize(linear: number): number {
  * Uses sharp's `cover` fit, which scales so the image fills the target and
  * crops the overflow from the centre.
  */
-export async function fitToPanel(input: Buffer): Promise<Buffer> {
+export async function fitToPanel(
+  input: Buffer,
+  width = PANEL_WIDTH,
+  height = PANEL_HEIGHT,
+): Promise<Buffer> {
   return sharp(input)
-    .resize(PANEL_WIDTH, PANEL_HEIGHT, { fit: "cover", position: "centre" })
+    .resize(width, height, { fit: "cover", position: "centre" })
     .removeAlpha()
     .toColourspace("srgb")
     .raw()
@@ -260,21 +266,90 @@ export async function renderAsset(
     readonly dither?: DitherAlgorithm;
     readonly palette?: PanelPalette;
     readonly compressRange?: boolean;
+    /** How far the picture is turned on the panel. */
+    readonly rotation?: Rotation;
   } = {},
 ): Promise<{ data: Buffer; raw: Buffer; indices: Uint8Array }> {
   const palette = options.palette ?? DEFAULT_PALETTE;
   const compressRange = options.compressRange ?? true;
+  const rotation = options.rotation ?? 0;
 
-  let rgb = await fitToPanel(input);
+  /* A turned picture is rendered at the turned dimensions, so that it
+   * fills the panel rather than being letterboxed inside it. */
+  const target = rotatedSize(rotation);
+
+  let rgb = await fitToPanel(input, target.width, target.height);
   if (compressRange) {
     rgb = compressDynamicRange(rgb, palette);
   }
 
-  const indices = ditherToPalette(rgb, palette.perceived, options.dither ?? "floyd-steinberg");
+  let indices = ditherToPalette(rgb, palette.perceived, options.dither ?? "floyd-steinberg");
+
+  /* The ditherer works in the picture's own orientation. Turning the
+   * colours afterwards would break up the error diffusion, so the picture
+   * is turned first and then dithered, which keeps the dithering as good
+   * as it would have been without the turn. */
+  if (rotation !== 0) {
+    indices = rotateIndices(indices, target.width, target.height, rotation);
+  }
+
   const raw = packIndicesFrom(indices);
   const data = gzipSync(raw, { level: 9 });
 
   return { data, raw, indices };
+}
+
+/**
+ * Turn a picture by a quarter of a turn, or by half of one.
+ *
+ * The result is the panel's portrait frame, so a picture that was
+ * rendered landscape comes out as a portrait image with the picture
+ * turned the right way up.
+ *
+ * @param indices Row-major colour indices.
+ * @param width   The width of the picture being turned.
+ * @param height  The height of the picture being turned.
+ * @param rotation How far to turn it.
+ */
+export function rotateIndices(
+  indices: Uint8Array,
+  width: number,
+  height: number,
+  rotation: Rotation,
+): Uint8Array {
+  if (rotation === 0) return indices;
+
+  const outWidth = rotation === 90 || rotation === 270 ? height : width;
+  const outHeight = rotation === 90 || rotation === 270 ? width : height;
+  const out = new Uint8Array(outWidth * outHeight);
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let outX = 0;
+      let outY = 0;
+
+      switch (rotation) {
+        case 90:
+          // A quarter turn clockwise.
+          outX = height - 1 - y;
+          outY = x;
+          break;
+        case 180:
+          outX = width - 1 - x;
+          outY = height - 1 - y;
+          break;
+        case 270:
+          // A quarter turn anticlockwise.
+          outX = y;
+          outY = width - 1 - x;
+          break;
+      }
+
+      out[outY * outWidth + outX] = indices[y * width + x]!;
+    }
+  }
+
+  return out;
 }
 
 /**

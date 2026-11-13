@@ -272,32 +272,51 @@ export class ScheduleService {
 
   /**
    * The photos eligible for scheduling, grouped by gallery.
+   *
+   * A frame that is mounted with the picture turned needs a different
+   * rendering of each photo, so the asset is looked up for the frame's
+   * own rotation. A photo that has not been rendered at that rotation yet
+   * falls back to its upright rendering.
    */
   private candidatesFor(deviceId: number): Candidate[] {
+    const rotation = this.rotationFor(deviceId);
+
     const rows = this.db
       .prepare(
-        `SELECT p.id, p.content_hash, p.weight, p.gallery_id
+        `SELECT p.id, COALESCE(pa.content_hash, p.content_hash) AS content_hash,
+                p.weight, p.gallery_id
          FROM photos p
          JOIN galleries g ON g.id = p.gallery_id
          JOIN device_galleries dg ON dg.gallery_id = p.gallery_id
+         LEFT JOIN photo_assets pa ON pa.photo_id = p.id AND pa.rotation = ?
          WHERE dg.device_id = ?
            AND g.enabled = 1
-           AND p.content_hash IS NOT NULL
+           AND COALESCE(pa.content_hash, p.content_hash) IS NOT NULL
          ORDER BY p.id`,
       )
-      .all(deviceId) as Array<{
+      .all(rotation, deviceId) as Array<{
       id: number;
-      content_hash: string;
+      content_hash: string | null;
       weight: number;
       gallery_id: number;
     }>;
 
     return rows.map((r) => ({
       photoId: r.id,
-      contentHash: r.content_hash,
+      contentHash: r.content_hash!,
       weight: r.weight,
       belongsTo: r.gallery_id,
     }));
+  }
+
+  /**
+   * How far the picture is turned on a frame.
+   */
+  rotationFor(deviceId: number): number {
+    const row = this.db
+      .prepare("SELECT rotation FROM devices WHERE id = ?")
+      .get(deviceId) as { rotation: number } | undefined;
+    return row?.rotation ?? 0;
   }
 
   /**

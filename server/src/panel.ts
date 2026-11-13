@@ -37,6 +37,39 @@ export const ROW_STRIDE_BYTES = PANEL_WIDTH / 2;
 export const RAW_FRAME_BYTES = ROW_STRIDE_BYTES * PANEL_HEIGHT;
 
 /**
+ * How far the picture is turned on the panel.
+ *
+ * The panel itself is always driven in portrait, so a rotation is a
+ * change to the picture rather than to the panel: the photo is rendered
+ * at the turned dimensions and then turned back so that it lands the
+ * right way up.
+ */
+export const ROTATIONS = [0, 90, 180, 270] as const;
+
+/** A rotation in degrees. */
+export type Rotation = (typeof ROTATIONS)[number];
+
+/**
+ * Whether a rotation is one the server understands.
+ */
+export function isRotation(value: unknown): value is Rotation {
+  return typeof value === "number" && (ROTATIONS as readonly number[]).includes(value);
+}
+
+/**
+ * The dimensions a picture is rendered at for a given rotation.
+ *
+ * A picture turned by ninety degrees is landscape, so it is rendered
+ * wider than it is tall, and then turned back into the panel's portrait
+ * frame.
+ */
+export function rotatedSize(rotation: Rotation): { width: number; height: number } {
+  return rotation === 90 || rotation === 270
+    ? { width: PANEL_HEIGHT, height: PANEL_WIDTH }
+    : { width: PANEL_WIDTH, height: PANEL_HEIGHT };
+}
+
+/**
  * Number of distinct panel colours (excluding the reserved index 4).
  */
 export const PALETTE_SIZE = 6;

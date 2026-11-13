@@ -223,6 +223,17 @@ ALTER TABLE devices ADD COLUMN on_battery INTEGER;
 `,
   },
   {
+    id: "0005_device_rotation",
+    sql: `
+-- How far the picture is turned on the frame.
+--
+-- The panel is always driven in portrait, so this is a change to the
+-- picture rather than to the panel: the photo is rendered at the turned
+-- dimensions and then turned back so that it lands the right way up.
+ALTER TABLE devices ADD COLUMN rotation INTEGER NOT NULL DEFAULT 0;
+`,
+  },
+  {
     id: "0004_sync_rules",
     sql: `
 -- Time-based check-in rules.
@@ -247,6 +258,25 @@ CREATE TABLE device_sync_rules (
 );
 
 CREATE INDEX idx_sync_rules_device ON device_sync_rules(device_id);
+`,
+  },
+  {
+    id: "0006_photo_assets",
+    sql: `
+-- The rendered asset for a photo at a given rotation.
+--
+-- A frame can be mounted with the picture turned, so the same photo
+-- needs a different rendering for each rotation. The asset's hash is the
+-- hash of its bytes, so each rendering is its own asset, and the frame is
+-- told which one it wants.
+CREATE TABLE photo_assets (
+  photo_id     INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+  rotation     INTEGER NOT NULL,
+  content_hash TEXT NOT NULL,
+  PRIMARY KEY (photo_id, rotation)
+);
+
+CREATE INDEX idx_photo_assets_hash ON photo_assets(content_hash);
 `,
   },
 ];

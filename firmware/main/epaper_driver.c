@@ -20,7 +20,9 @@
 #include "driver/spi_master.h"
 #include "epaper.h"
 #include "esp_err.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_pm.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -30,6 +32,18 @@ static const char *TAG = "epaper";
 
 static epaper_config_t g_cfg;
 static spi_device_handle_t s_spi;
+
+/* The panel must not be disturbed while it is being written to.
+ *
+ * The CPU can enter light sleep between tasks, and when it does, ESP-IDF
+ * isolates the GPIOs. The panel's enable pin is then disconnected, the
+ * panel loses power in the middle of the transfer, and the picture comes
+ * out torn. A power management lock keeps the CPU awake for the duration
+ * of the update.
+ *
+ * The reference firmware does the same thing.
+ */
+static esp_pm_lock_handle_t s_pm_lock = NULL;
 
 /* Panel command codes. */
 #define PSR 0x00
@@ -295,17 +309,37 @@ static void send_init_sequence(void) {
 /**
  * Write one half of the image through one chip select.
  *
+ * The panel shows the rows bottom to top: the first row it receives is
+ * the bottom of the picture. Our frame buffer is in the ordinary order,
+ * top to bottom, so the rows are sent in reverse.
+ *
+ * The columns are sent in the order they are in the frame buffer, and the
+ * first chip select takes the left half of the row.
+ *
  * @param image     The full frame buffer.
- * @param cs_index  0 for the left half, 1 for the right half.
- * @param offset    Byte offset of this half within each row.
+ * @param cs_index  0 for the first chip select, 1 for the second.
+ * @param half      0 for the left half of the row, 1 for the right.
  */
-static void send_image_half(const uint8_t *image, int cs_index, size_t offset) {
+static void send_image_half(const uint8_t *image, int cs_index, int half) {
     uint8_t line_buf[HALF_ROW_BYTES];
 
     cs_select(cs_index, 0);
     write_command(DTM);
-    for (uint16_t row = 0; row < PANEL_HEIGHT; row++) {
-        memcpy(line_buf, image + (size_t)row * PANEL_ROW_STRIDE_BYTES + offset, HALF_ROW_BYTES);
+    for (uint16_t i = 0; i < PANEL_HEIGHT; i++) {
+        /* The panel shows the rows bottom to top. */
+        uint16_t row = (uint16_t)(PANEL_HEIGHT - 1 - i);
+        const uint8_t *src = image + (size_t)row * PANEL_ROW_STRIDE_BYTES;
+
+        /* The first chip select takes the left half of the row. */
+        size_t offset = (size_t)half * HALF_ROW_BYTES;
+
+        /* The panel reads the row right to left, so the bytes go out
+         * backwards, with the two pixels in each byte swapped. */
+        for (size_t j = 0; j < HALF_ROW_BYTES; j++) {
+            uint8_t b = src[offset + HALF_ROW_BYTES - 1 - j];
+            line_buf[j] = (uint8_t)((b << 4) | (b >> 4));
+        }
+
         spi_write_data(line_buf, HALF_ROW_BYTES);
     }
     cs_select(cs_index, 1);
@@ -341,6 +375,16 @@ void epaper_init(const epaper_config_t *cfg) {
 
     spi_add_device();
     gpio_init();
+
+    /* Keep the CPU awake while the panel is being written to. See the note
+     * on s_pm_lock. */
+    if (s_pm_lock == NULL) {
+        esp_err_t err = esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "epd_update", &s_pm_lock);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Could not create the power management lock: %s",
+                     esp_err_to_name(err));
+        }
+    }
 }
 
 void epaper_clear(uint8_t *image, uint8_t color) {
@@ -352,10 +396,23 @@ void epaper_clear(uint8_t *image, uint8_t color) {
 void epaper_display(uint8_t *image) {
     ESP_LOGI(TAG, "Display update: %d bytes", PANEL_FRAME_BYTES);
 
+    /* Hold the CPU awake for the whole update. See the note on
+     * s_pm_lock. */
+    if (s_pm_lock != NULL) {
+        ESP_ERROR_CHECK(esp_pm_lock_acquire(s_pm_lock));
+    }
+
     send_init_sequence();
+
+    /* The first chip select shows the left of the picture and the second
+     * the right. */
     send_image_half(image, 0, 0);
-    send_image_half(image, 1, HALF_ROW_BYTES);
+    send_image_half(image, 1, 1);
     display_refresh();
+
+    if (s_pm_lock != NULL) {
+        ESP_ERROR_CHECK(esp_pm_lock_release(s_pm_lock));
+    }
 
     ESP_LOGI(TAG, "Display update complete");
 }
