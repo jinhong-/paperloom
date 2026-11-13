@@ -336,7 +336,10 @@ static void send_image_half(const uint8_t *image, int cs_index, int half) {
 
     cs_select(cs_index, 0);
     write_command(DTM);
-    for (uint16_t row = 0; row < PANEL_HEIGHT; row++) {
+    for (uint16_t i = 0; i < PANEL_HEIGHT; i++) {
+        /* The panel reads the rows bottom to top, so the last row of the
+         * picture is sent first. */
+        uint16_t row = (uint16_t)(PANEL_HEIGHT - 1 - i);
         const uint8_t *src = image + (size_t)row * PANEL_ROW_STRIDE_BYTES;
 
         /* The first half of the reversed row is the last half of ours,
