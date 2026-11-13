@@ -32,6 +32,28 @@
 static const char *TAG = "paperloom";
 
 /**
+ * The claim code that is currently on the panel.
+ *
+ * The device asks the server for the claim code every few seconds while
+ * it waits to be claimed, and the code does not usually change. Keeping
+ * track of what is on the panel means the screen is only redrawn when
+ * there is something new to show, which matters because a refresh of an
+ * e-paper panel takes a quarter of a minute and uses up the panel's
+ * life.
+ */
+static char s_shown_claim_code[32] = {0};
+
+/**
+ * How long the device waits between asking the server whether it has
+ * been claimed.
+ *
+ * The device stays awake while it waits, so this is how often it checks.
+ * It is short enough that the owner sees the frame react as soon as
+ * they claim it, and long enough that the server is not troubled.
+ */
+#define CLAIM_POLL_INTERVAL_MS 10000
+
+/**
  * Why the device woke.
  */
 typedef enum {
@@ -123,17 +145,39 @@ static int64_t run_cycle(wake_reason_t reason) {
                 }
             }
 
-            /* Enrol if the server does not know us yet. The enrolment
-             * sends the public key and gets back a claim code, which the
-             * owner scans to make the frame theirs. */
-            if (sync_claim_code()[0] == '\0') {
+            /* Enrol, and keep asking until the owner claims the device.
+             *
+             * Enrolling is idempotent: the server keeps answering with
+             * the claim code it currently holds, so the code on the panel
+             * and the code the owner needs are always the same one. That
+             * is what makes it safe to ask again and again.
+             *
+             * The device waits for the owner here rather than going back
+             * to sleep, because it has nothing else to show until it has
+             * been claimed. It asks every few seconds. */
+            if (sync_needs_enrol()) {
                 char claim_code[32] = {0};
                 char claim_url[160] = {0};
-                if (sync_enrol(claim_code, sizeof(claim_code), claim_url, sizeof(claim_url))) {
-                    ESP_LOGI(TAG, "Enrolled with the server; the claim code is %s", claim_code);
+                bool claimed = false;
 
-                    /* Show the claim code so the owner can scan it. */
-                    display_task_show_claim_screen(claim_code, claim_url);
+                if (sync_enrol(claim_code, sizeof(claim_code), claim_url, sizeof(claim_url),
+                               &claimed)) {
+                    if (claimed) {
+                        ESP_LOGI(TAG, "The device has been claimed");
+                    } else {
+                        ESP_LOGI(TAG, "Waiting to be claimed; the claim code is %s", claim_code);
+
+                        /* The screen is only redrawn when the code has
+                         * actually changed. A refresh of an e-paper panel
+                         * takes a quarter of a minute and uses up the
+                         * panel's life, so there is no sense in doing it
+                         * every few seconds for the same code. */
+                        if (strcmp(claim_code, s_shown_claim_code) != 0) {
+                            snprintf(s_shown_claim_code, sizeof(s_shown_claim_code), "%s",
+                                     claim_code);
+                            display_task_show_claim_screen(claim_code, claim_url);
+                        }
+                    }
                 } else {
                     ESP_LOGW(TAG, "Could not enrol with the server");
                 }
@@ -286,6 +330,28 @@ void app_main(void) {
     }
 
     wake_reason_t reason = detect_wake_reason();
+
+    /* While the device is waiting to be claimed it stays awake and asks
+     * the server every few seconds, because it has nothing else to show
+     * and the owner may claim it at any moment. A deep sleep would wake
+     * it far too late to be useful.
+     *
+     * Once it has been claimed it settles into the normal pattern: a
+     * cycle, then a long sleep. */
+    while (sync_needs_enrol()) {
+        int64_t delay = run_cycle(reason);
+
+        if (delay > CLAIM_POLL_INTERVAL_MS) {
+            delay = CLAIM_POLL_INTERVAL_MS;
+        }
+        if (delay < 0) {
+            delay = CLAIM_POLL_INTERVAL_MS;
+        }
+
+        ESP_LOGI(TAG, "Waiting %lld ms for the device to be claimed", (long long)delay);
+        vTaskDelay(pdMS_TO_TICKS((uint32_t)delay));
+    }
+
     int64_t delay = run_cycle(reason);
 
     /* Persist the state we want to remember across the sleep. */

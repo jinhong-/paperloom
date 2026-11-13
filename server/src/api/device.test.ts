@@ -354,6 +354,95 @@ test("the schedule is identical across retries", async (t) => {
   assert.equal(a, b, "a retry must yield the same schedule revision");
 });
 
+test("enrolling twice gives the same claim code", async (t) => {
+  const server = await makeServer();
+  t.after(async () => {
+    await server.app.close();
+  });
+
+  const deviceId = `dev-${randomUUID()}`;
+  const keys = generateKeyPair();
+  const body = Buffer.from(
+    JSON.stringify({
+      device_id: deviceId,
+      public_key: publicKeyToBase64(keys.publicKeyPem),
+    }),
+  );
+
+  const first = await signed(server, keys, deviceId, "POST", "/api/device/enroll", body);
+  assert.equal(first.status, 200);
+  const firstBody = first.body as { claim_code: string; claimed: boolean };
+  assert.equal(firstBody.claimed, false);
+
+  // Enrolling again must not change the code. The code is on the panel
+  // for the owner to read, so a new one each time would leave the panel
+  // showing something that no longer works.
+  const second = await signed(server, keys, deviceId, "POST", "/api/device/enroll", body);
+  assert.equal(second.status, 200);
+  const secondBody = second.body as { claim_code: string; claimed: boolean };
+  assert.equal(secondBody.claim_code, firstBody.claim_code, "the claim code must not change");
+});
+
+test("a claimed device is told it is claimed rather than refused", async (t) => {
+  const server = await makeServer();
+  t.after(async () => {
+    await server.app.close();
+  });
+
+  const deviceId = `dev-${randomUUID()}`;
+  const keys = generateKeyPair();
+  const body = Buffer.from(
+    JSON.stringify({
+      device_id: deviceId,
+      public_key: publicKeyToBase64(keys.publicKeyPem),
+    }),
+  );
+
+  const enroll = await signed(server, keys, deviceId, "POST", "/api/device/enroll", body);
+  assert.equal(enroll.status, 200);
+  const claimCode = (enroll.body as { claim_code: string }).claim_code;
+
+  server.db
+    .prepare("UPDATE devices SET state = 'claimed', claim_code = NULL WHERE device_id = ?")
+    .run(deviceId);
+
+  // The device keeps asking until it hears that it has been claimed, so
+  // the answer has to be a plain yes rather than an error.
+  const again = await signed(server, keys, deviceId, "POST", "/api/device/enroll", body);
+  assert.equal(again.status, 200);
+  const againBody = again.body as { claimed: boolean };
+  assert.equal(againBody.claimed, true);
+});
+
+test("the claim code is replaced once it has expired", async (t) => {
+  const server = await makeServer();
+  t.after(async () => {
+    await server.app.close();
+  });
+
+  const deviceId = `dev-${randomUUID()}`;
+  const keys = generateKeyPair();
+  const body = Buffer.from(
+    JSON.stringify({
+      device_id: deviceId,
+      public_key: publicKeyToBase64(keys.publicKeyPem),
+    }),
+  );
+
+  const first = await signed(server, keys, deviceId, "POST", "/api/device/enroll", body);
+  const firstCode = (first.body as { claim_code: string }).claim_code;
+
+  // Let the code run out.
+  server.db
+    .prepare("UPDATE devices SET claim_expires_at = ? WHERE device_id = ?")
+    .run(new Date(Date.now() - 1000).toISOString(), deviceId);
+
+  const second = await signed(server, keys, deviceId, "POST", "/api/device/enroll", body);
+  const secondCode = (second.body as { claim_code: string }).claim_code;
+
+  assert.notEqual(secondCode, firstCode, "an expired code must be replaced");
+});
+
 test("a device cannot sync before it has been claimed", async (t) => {
   const server = await makeServer();
   t.after(async () => {

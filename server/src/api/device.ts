@@ -9,19 +9,10 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import { AssetStore } from "../assets/store.js";
-import {
-  HEADER_DEVICE,
-  HEADER_NONCE,
-  HEADER_SIGNATURE,
-  HEADER_TIMESTAMP,
-  MAX_CLOCK_SKEW_MS,
-  NONCE_TTL_MS,
-  canonicalString,
-  publicKeyFromBase64,
-  verifyRequest,
-} from "../auth/signing.js";
+import { MAX_CLOCK_SKEW_MS } from "../auth/signing.js";
 import type { Db } from "../db/index.js";
 import type { ScheduleService } from "../schedule/service.js";
+import { verifyDeviceRequest } from "./device-auth.js";
 
 /**
  * How many assets a frame on battery is given in one check-in.
@@ -84,6 +75,22 @@ export interface SyncRequest {
 export interface SyncResponse {
   readonly server_time: string;
   readonly next_sync_at: string;
+  /**
+   * Whether the device has been claimed by an owner.
+   *
+   * The device uses this to know that it does not need to enrol again.
+   * A device that has been claimed keeps its identity for good; only a
+   * device that has never been claimed needs to ask for a claim code.
+   */
+  readonly claimed: boolean;
+  /**
+   * The claim code, when the device is still waiting to be claimed.
+   *
+   * The server is the authority on this. A device that has been asleep
+   * may be holding a code that has been replaced, and this is what keeps
+   * the code on its panel and the code the owner needs the same one.
+   */
+  readonly claim_code?: string | null;
   readonly schedule: {
     readonly revision: string;
     readonly items: ReadonlyArray<{ readonly at: string; readonly asset: string }>;
@@ -137,115 +144,16 @@ export function registerDeviceApi(app: FastifyInstance, options: DeviceApiOption
     request: FastifyRequest,
     reply: FastifyReply,
   ): Promise<{ id: number; deviceId: string } | null> {
-    const deviceId = request.headers[HEADER_DEVICE];
-    const timestampHeader = request.headers[HEADER_TIMESTAMP];
-    const nonce = request.headers[HEADER_NONCE];
-    const signature = request.headers[HEADER_SIGNATURE];
-
-    if (
-      typeof deviceId !== "string" ||
-      typeof timestampHeader !== "string" ||
-      typeof nonce !== "string" ||
-      typeof signature !== "string"
-    ) {
-      await reply.code(401).send({ error: "missing signature headers" });
+    /* Syncing is for devices that have been claimed. A device that is
+     * still waiting to be claimed uses the enrolment endpoints instead,
+     * which are separate on purpose: a device that has not been claimed
+     * has no business receiving a schedule. */
+    const device = await verifyDeviceRequest(request, reply, db, { requireClaimed: true });
+    if (!device) {
       return null;
     }
 
-    const timestamp = Number(timestampHeader);
-    if (!Number.isFinite(timestamp)) {
-      await reply.code(401).send({ error: "invalid timestamp" });
-      return null;
-    }
-
-    const skew = Math.abs(Date.now() - timestamp);
-    if (skew > MAX_CLOCK_SKEW_MS) {
-      request.log.warn(
-        { deviceId, timestamp, now: Date.now(), skew },
-        "the request timestamp is outside the accepted window",
-      );
-      await reply.code(401).send({ error: "timestamp outside accepted window" });
-      return null;
-    }
-
-    const device = db
-      .prepare("SELECT id, device_id, public_key, state FROM devices WHERE device_id = ?")
-      .get(deviceId) as
-      | { id: number; device_id: string; public_key: string | null; state: string }
-      | undefined;
-
-    if (!device || device.state !== "claimed" || !device.public_key) {
-      request.log.warn(
-        { deviceId, state: device?.state ?? "(unknown)", hasKey: !!device?.public_key },
-        "the device is not allowed to sync",
-      );
-      await reply.code(401).send({ error: "unknown or unclaimed device" });
-      return null;
-    }
-
-    let publicKeyPem: string;
-    try {
-      publicKeyPem = publicKeyFromBase64(device.public_key);
-    } catch {
-      await reply.code(401).send({ error: "device has an unusable public key" });
-      return null;
-    }
-
-    const body = request.rawBody ?? Buffer.alloc(0);
-    const path = request.url;
-
-    const valid = verifyRequest(
-      { method: request.method, path, timestamp, nonce, deviceId, body },
-      signature,
-      publicKeyPem,
-    );
-    if (!valid) {
-      request.log.warn(
-        {
-          deviceId,
-          path,
-          timestamp,
-          nonce,
-          bodyLength: body.length,
-          canonical: canonicalString(
-            { method: request.method, path, timestamp, nonce, deviceId, body },
-          ),
-        },
-        "the signature did not verify",
-      );
-      await reply.code(401).send({ error: "invalid signature" });
-      return null;
-    }
-
-    // Replay defence: a nonce may be used only once.
-    //
-    // The lookup and the insert are done in one transaction so that two
-    // concurrent requests carrying the same nonce cannot both pass the
-    // check.
-    const claimNonce = db.transaction((deviceId: number, value: string): boolean => {
-      const seen = db
-        .prepare("SELECT 1 FROM request_nonces WHERE device_id = ? AND nonce = ?")
-        .get(deviceId, value);
-      if (seen) return false;
-      db.prepare("INSERT INTO request_nonces (device_id, nonce) VALUES (?, ?)").run(deviceId, value);
-      return true;
-    });
-
-    if (!claimNonce(device.id, nonce)) {
-      await reply.code(401).send({ error: "nonce already used" });
-      return null;
-    }
-
-    // Housekeeping: drop nonces that can no longer be replayed.
-    //
-    // The cutoff is written in the same ISO-8601 format the column uses.
-    // SQLite's `datetime('now')` produces "YYYY-MM-DD HH:MM:SS" (a space,
-    // no timezone), which does not sort correctly against an ISO string.
-    db.prepare("DELETE FROM request_nonces WHERE seen_at < ?").run(
-      new Date(Date.now() - NONCE_TTL_MS).toISOString(),
-    );
-
-    return { id: device.id, deviceId: device.device_id };
+    return { id: device.id, deviceId: device.deviceId };
   }
 
   /**
@@ -322,6 +230,15 @@ export function registerDeviceApi(app: FastifyInstance, options: DeviceApiOption
     const window = schedules.getForDevice(auth.id, now);
     const policy = schedules.policyFor(auth.id);
 
+    // Only the events that are still to come.
+    //
+    // A frame is asleep for most of the time, and the schedule is built
+    // for a window that starts in the past. An event whose time has
+    // already passed is one the frame missed, and showing it now would
+    // show a photo late and out of order. A missed event is a missed
+    // event; the frame shows what is coming.
+    const upcoming = window.items.filter((item) => item.at > now);
+
     // Which assets the device needs but does not yet have.
     //
     // The device tells us what it already holds via `cached_assets`; the
@@ -329,7 +246,7 @@ export function registerDeviceApi(app: FastifyInstance, options: DeviceApiOption
     // that field we cannot tell a fresh device from a fully-cached one, so
     // the manifest stays empty only when the device explicitly reports its
     // cache contents.
-    const required = new Set(window.items.map((item) => item.asset));
+    const required = new Set(upcoming.map((item) => item.asset));
     const cached = new Set(body.cached_assets ?? []);
     const assetManifest: SyncResponse["assets"] = {};
 
@@ -361,9 +278,12 @@ export function registerDeviceApi(app: FastifyInstance, options: DeviceApiOption
       // The interval depends on the time of day, so it is worked out for
       // the moment of this check-in rather than taken from the policy.
       next_sync_at: new Date(now + schedules.intervalAt(auth.id, now) * 1000).toISOString(),
+      // The device is only claimed if the owner has claimed it. Until
+      // then it has to keep asking for a claim code.
+      claimed: true,
       schedule: {
         revision: window.revision,
-        items: window.items.map((item) => ({
+        items: upcoming.map((item) => ({
           at: new Date(item.at).toISOString(),
           asset: item.asset,
         })),

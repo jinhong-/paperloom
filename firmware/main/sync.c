@@ -287,6 +287,37 @@ static void base64_encode(const uint8_t *data, size_t len, char *out, size_t out
     out[o] = '\0';
 }
 
+/**
+ * The claim code from the last enrolment, if there was one.
+ */
+static char s_claim_code[32] = {0};
+
+/**
+ * The claim URL from the last enrolment.
+ */
+static char s_claim_url[160] = {0};
+
+/**
+ * Whether the server has said this device is claimed.
+ *
+ * A device that has been claimed is enrolled for good. It keeps its
+ * identity for as long as its key is stored, and it never asks the
+ * server for a new claim code.
+ */
+static bool s_claimed = false;
+
+/**
+ * Whether the device still has to enrol.
+ *
+ * The device enrols until it is claimed. While it waits it keeps asking
+ * the server, which keeps answering with the code it currently holds, so
+ * the code on the panel and the code the owner needs are always the same
+ * one.
+ */
+bool sync_needs_enrol(void) {
+    return !s_claimed;
+}
+
 esp_err_t sync_init(void) {
     nvs_read_string(NVS_KEY_SERVER_URL, s_server_url, sizeof(s_server_url));
     nvs_read_string(NVS_KEY_DEVICE_ID, s_device_id, sizeof(s_device_id));
@@ -308,6 +339,7 @@ esp_err_t sync_init(void) {
     if (err != ESP_OK) {
         return err;
     }
+
     if (s_server_url[0] == '\0') {
         ESP_LOGW(TAG, "No server URL configured; the device is not set up");
     }
@@ -319,15 +351,7 @@ bool sync_is_configured(void) {
     return s_server_url[0] != '\0' && s_device_id[0] != '\0';
 }
 
-/**
- * The claim code from the last enrolment, if there was one.
- */
-static char s_claim_code[32] = {0};
 
-/**
- * The claim URL from the last enrolment.
- */
-static char s_claim_url[160] = {0};
 
 /* Defined further down, but needed by the enrolment code above. */
 static esp_err_t signed_request(const char *method, const char *path, const char *body,
@@ -336,15 +360,27 @@ static esp_err_t signed_request(const char *method, const char *path, const char
 /**
  * Enrol with the server.
  *
- * The device sends its public key and gets a claim code back, which the
+ * The device sends its public key and gets back a claim code, which the
  * owner scans to make the frame theirs.
+ *
+ * Enrolling is idempotent. The device keeps asking while it waits to be
+ * claimed, and the server keeps answering with the code it currently
+ * holds, so the code on the panel and the code the owner needs are always
+ * the same one. When the owner claims the device, the answer says so and
+ * the device stops asking.
+ *
+ * The claim code is therefore not kept: the device is told what to show
+ * each time it asks, rather than remembering a code that might have run
+ * out in the meantime.
  *
  * @param claim_code The code that was issued, if any.
  * @param claim_url  The URL the claim QR code should point at.
+ * @param claimed    Set to true when the device has been claimed.
  *
  * @return true on success.
  */
-bool sync_enrol(char *claim_code, size_t claim_code_len, char *claim_url, size_t claim_url_len) {
+bool sync_enrol(char *claim_code, size_t claim_code_len, char *claim_url, size_t claim_url_len,
+                bool *claimed) {
     if (!sync_is_configured()) {
         ESP_LOGW(TAG, "Cannot enrol: the server URL is not set");
         return false;
@@ -375,6 +411,19 @@ bool sync_enrol(char *claim_code, size_t claim_code_len, char *claim_url, size_t
     if (root == NULL) {
         ESP_LOGE(TAG, "Could not parse the enrolment response: %s", response);
         return false;
+    }
+
+    /* The server tells us whether the device has been claimed. */
+    cJSON *is_claimed = cJSON_GetObjectItem(root, "claimed");
+    bool now_claimed = cJSON_IsTrue(is_claimed);
+    if (claimed != NULL) {
+        *claimed = now_claimed;
+    }
+
+    if (now_claimed) {
+        ESP_LOGI(TAG, "The server says this device is claimed");
+        s_claimed = true;
+        return true;
     }
 
     cJSON *code = cJSON_GetObjectItem(root, "claim_code");
@@ -639,8 +688,8 @@ bool sync_next_wake(const int64_t *now_ms, int64_t *wake_ms) {
  * @param out      The response body; the buffer must be large enough.
  * @param out_len  The buffer size on entry, the response length on exit.
  */
-static esp_err_t signed_request(const char *method, const char *path, const char *body,
-                                 size_t body_len, char *out, size_t *out_len) {
+static esp_err_t signed_request_status(const char *method, const char *path, const char *body,
+                                       size_t body_len, char *out, size_t *out_len, int *status) {
     char url[512];
     snprintf(url, sizeof(url), "%s%s", s_server_url, path);
 
@@ -697,7 +746,7 @@ static esp_err_t signed_request(const char *method, const char *path, const char
     size_t write_len = (body != NULL && body[0] != '\0') ? body_len : 0;
     esp_err_t err = esp_http_client_open(client, (int)write_len);
 
-    int status = 0;
+    int received_status = 0;
     size_t received = 0;
     size_t capacity = *out_len;
 
@@ -727,7 +776,7 @@ static esp_err_t signed_request(const char *method, const char *path, const char
             }
         }
 
-        status = esp_http_client_get_status_code(client);
+        received_status = esp_http_client_get_status_code(client);
         esp_http_client_close(client);
     }
 
@@ -738,12 +787,28 @@ static esp_err_t signed_request(const char *method, const char *path, const char
         return ESP_FAIL;
     }
 
-    if (status != 200) {
-        ESP_LOGW(TAG, "Request to %s returned %d", path, status);
-        return ESP_FAIL;
+    if (status != NULL) {
+        *status = received_status;
+    }
+
+    if (received_status != 200) {
+        ESP_LOGW(TAG, "Request to %s returned %d", path, received_status);
     }
 
     return ESP_OK;
+}
+
+/**
+ * Send a signed request, and insist that it succeeds.
+ */
+static esp_err_t signed_request(const char *method, const char *path, const char *body,
+                                 size_t body_len, char *out, size_t *out_len) {
+    int status = 0;
+    if (signed_request_status(method, path, body, body_len, out, out_len, &status) != ESP_OK) {
+        return ESP_FAIL;
+    }
+
+    return status == 200 ? ESP_OK : ESP_FAIL;
 }
 
 /**
@@ -927,6 +992,13 @@ sync_result_t process_sync_response(const char *json, size_t len) {
         if (parse_iso8601_ms(server_time->valuestring, &server_ms) == ESP_OK) {
             time_set_from_server(server_ms);
         }
+    }
+
+    /* The server only serves the sync to a device that has been claimed,
+     * so reaching here means the device is enrolled for good. */
+    if (!s_claimed) {
+        ESP_LOGI(TAG, "The server has claimed this device");
+        s_claimed = true;
     }
 
     /* Remember when to check in next. */

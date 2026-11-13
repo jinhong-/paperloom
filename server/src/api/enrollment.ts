@@ -43,7 +43,20 @@ export interface PendingEnrollmentRequest {
 
 export function registerEnrollmentApi(app: FastifyInstance, options: EnrollmentOptions): void {
   const { db, basePath } = options;
-  const claimTtlMs = options.claimTtlMs ?? 15 * 60 * 1000;
+
+  /**
+   * How long a claim code stays valid.
+   *
+   * The code is shown on the panel for the owner to read or scan, so it
+   * has to last long enough for a person to notice the frame, go to it,
+   * and claim it. An hour is enough for that in most cases.
+   *
+   * The code is high-entropy, single-use, and can only be redeemed by
+   * somebody who is already signed in, so a longer life is not much of a
+   * risk. The device keeps the same code across restarts, so this is what
+   * ends it rather than the device asking for a new one.
+   */
+  const claimTtlMs = options.claimTtlMs ?? 60 * 60 * 1000;
 
   /**
    * The signed-in user id, or null if the request is not authenticated.
@@ -79,20 +92,49 @@ export function registerEnrollmentApi(app: FastifyInstance, options: EnrollmentO
     }
 
     const now = Date.now();
-    const expiresAt = new Date(now + claimTtlMs);
 
     // A device re-enrolling replaces its pending record; it does not take
     // over an already-claimed device.
     const existing = db
-      .prepare("SELECT id, state FROM devices WHERE device_id = ?")
-      .get(body.device_id) as { id: number; state: string } | undefined;
+      .prepare("SELECT id, state, claim_code, claim_expires_at FROM devices WHERE device_id = ?")
+      .get(body.device_id) as
+      | { id: number; state: string; claim_code: string | null; claim_expires_at: string | null }
+      | undefined;
 
     if (existing?.state === "claimed") {
-      await reply.code(409).send({ error: "device is already claimed" });
+      /* The device is enrolled and has been claimed. The device keeps
+       * asking until it hears this, so the answer is a plain "yes" rather
+       * than an error: from the device's point of view this is the end
+       * of the enrolment and the start of the syncing.
+       *
+       * The device is not told the owner's details, and the request is
+       * still signed, so nothing here gives anything away. */
+      await reply.send({
+        claimed: true,
+        server_time: new Date().toISOString(),
+      });
       return;
     }
 
-    const claimCode = generateClaimCode();
+    /* A device that enrols again while it is still waiting to be claimed
+     * keeps the code it already has, as long as that code has not run
+     * out.
+     *
+     * The code is on the panel for the owner to read, so handing out a
+     * new one each time the device wakes would mean the code on the panel
+     * stopped working the moment the device woke up again. Reusing it
+     * keeps the panel and the server in agreement.
+     */
+    let claimCode = existing?.claim_code ?? null;
+    let expiresAt =
+      existing?.claim_expires_at !== null && existing?.claim_expires_at !== undefined
+        ? new Date(existing.claim_expires_at)
+        : null;
+
+    if (claimCode === null || expiresAt === null || expiresAt.getTime() < now) {
+      claimCode = generateClaimCode();
+      expiresAt = new Date(now + claimTtlMs);
+    }
 
     if (existing) {
       db.prepare(
@@ -131,6 +173,9 @@ export function registerEnrollmentApi(app: FastifyInstance, options: EnrollmentO
     await reply.send({
       claim_code: claimCode,
       expires_at: expiresAt.toISOString(),
+      // The device is not claimed until an owner claims it, so it keeps
+      // showing the code until the server says otherwise.
+      claimed: false,
       // The device encodes this as a QR code pointing at the claim URL.
       claim_url: `/claim/${claimCode}`,
       // The device's clock is not yet anchored to real time when it first

@@ -72,19 +72,35 @@ bool sync_fetch_server_time(void);
  * The device sends its public key and receives a claim code, which the
  * owner scans to make the frame theirs.
  *
+ * Enrolling is idempotent: the device may call it as often as it likes
+ * while it waits to be claimed. Each call returns the code the server
+ * currently holds, so the code on the panel and the code the owner needs
+ * are always the same one. Once the owner claims the device, the call
+ * reports that it has been claimed and the device stops enrolling.
+ *
  * @param claim_code     The code that was issued.
  * @param claim_code_len The size of that buffer.
  * @param claim_url      The URL the claim QR code should point at.
  * @param claim_url_len  The size of that buffer.
+ * @param claimed        Set to true when the device has been claimed.
  *
  * @return true on success.
  */
-bool sync_enrol(char *claim_code, size_t claim_code_len, char *claim_url, size_t claim_url_len);
+bool sync_enrol(char *claim_code, size_t claim_code_len, char *claim_url, size_t claim_url_len,
+                bool *claimed);
 
 /**
  * The claim code from the last enrolment.
  */
 const char *sync_claim_code(void);
+
+/**
+ * Whether the device still has to enrol with the server.
+ *
+ * The device enrols until it is claimed. While it waits it keeps asking
+ * the server, which keeps answering with the code it currently holds.
+ */
+bool sync_needs_enrol(void);
 
 /**
  * The claim URL from the last enrolment.
