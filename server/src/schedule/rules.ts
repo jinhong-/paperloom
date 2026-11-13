@@ -15,22 +15,7 @@
  * comes with rules already set.
  */
 
-/** The days of the week, as the server stores them. */
-export const DAY_NAMES = [
-  "Sunday",
-  "Monday",
-  "Tuesday",
-  "Wednesday",
-  "Thursday",
-  "Friday",
-  "Saturday",
-] as const;
-
-/** The bit for each day in a rule's day mask. */
-export const DAY_BITS = [1, 2, 4, 8, 16, 32, 64] as const;
-
-/** A mask that covers every day of the week. */
-export const EVERY_DAY = 127;
+import { DAY_BITS, DAY_NAMES, EVERY_DAY } from "./defaults.js";
 
 /**
  * One check-in rule.
@@ -231,3 +216,7 @@ export function parseMinute(text: string): number | null {
   if (hours > 24 || mins > 59) return null;
   return hours * 60 + mins;
 }
+
+/* The day constants live with the default rules, so that the frame and
+ * the management page agree about what a sensible rule is. */
+export { DAY_BITS, DAY_NAMES, EVERY_DAY };

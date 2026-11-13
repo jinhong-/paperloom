@@ -35,6 +35,7 @@ const deviceGalleries = ref<Set<number>>(new Set());
 
 /* Check-in rules. */
 const rules = ref<SyncRule[]>([]);
+/* The rule being written. */
 const ruleDays = ref<number[]>([0, 1, 2, 3, 4, 5, 6]);
 const ruleStart = ref("08:00");
 const ruleEnd = ref("22:00");

@@ -834,7 +834,15 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       return;
     }
 
-    const window = schedules.getForDevice(Number(id), Date.now());
+    const now = Date.now();
+    const window = schedules.getForDevice(Number(id), now);
+
+    /* Only the events that are still to come.
+     *
+     * The window is planned ahead of time, so it holds events the frame
+     * has already shown. Those are of no interest to the owner: what they
+     * want to see is what the frame is going to show next. */
+    const upcoming = window.items.filter((item) => item.at > now);
 
     /* The photo behind each asset, so the owner sees which picture is
      * going to be shown rather than a hash. */
@@ -848,7 +856,7 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
 
     await reply.send({
       revision: window.revision,
-      items: window.items.map((item) => {
+      items: upcoming.map((item) => {
         const photo = photoByHash.get(item.asset);
         return {
           at: new Date(item.at).toISOString(),
