@@ -62,11 +62,6 @@ void draw_vline(uint8_t *buffer, int width, int height, int x, int y, int len, u
 /**
  * Draw a single character.
  *
- * The font table is the Waveshare font24, which stores each glyph
- * bottom-up: the first row in the table is the bottom of the letter and
- * the last is the top. So the glyph is read from the end of the table
- * backwards and drawn from the bottom of the character upwards.
- *
  * @return The advance in pixels.
  */
 int draw_char(uint8_t *buffer, int width, int height, int x, int y, char c, uint8_t color) {
@@ -77,14 +72,17 @@ int draw_char(uint8_t *buffer, int width, int height, int x, int y, char c, uint
 
     const uint8_t *glyph = font_ascii_17x24[code - FONT_FIRST_CHAR];
 
-    /* Draw from the bottom of the character upwards, taking the rows from
-     * the end of the table, which is where the top of the letter is. */
-    for (int row = FONT_HEIGHT - 1; row >= 0; row--) {
-        const uint8_t *row_bytes = &glyph[(FONT_HEIGHT - 1 - row) * FONT_ROW_BYTES];
+    /* The font table is the Waveshare font24, which stores each glyph
+     * top row first, and each row left to right, with the leftmost pixel
+     * in the top bit of the first byte.
+     *
+     * So the glyph is read straight out of the table: row by row from
+     * the start, and within each row, pixel by pixel from the left. */
+    for (int row = 0; row < FONT_HEIGHT; row++) {
+        const uint8_t *row_bytes = &glyph[row * FONT_ROW_BYTES];
         for (int col = 0; col < FONT_WIDTH; col++) {
-            int bit = FONT_WIDTH - 1 - col;
-            int byte_index = bit / 8;
-            int bit_index = 7 - (bit % 8);
+            int byte_index = col / 8;
+            int bit_index = 7 - (col % 8);
             if (row_bytes[byte_index] & (1 << bit_index)) {
                 draw_pixel(buffer, width, height, x + col, y + row, color);
             }
@@ -148,14 +146,12 @@ int draw_text_scaled(uint8_t *buffer, int width, int height, int x, int y, const
             code = '?';
         }
         const uint8_t *source = font_ascii_17x24[code - FONT_FIRST_CHAR];
-
-        /* The table is bottom-up, so the rows are taken from the end of
-         * it, which is where the top of the letter is. */
-        for (int row = FONT_HEIGHT - 1; row >= 0; row--) {
-            const uint8_t *row_bytes = &source[(FONT_HEIGHT - 1 - row) * FONT_ROW_BYTES];
+        for (int row = 0; row < FONT_HEIGHT; row++) {
+            const uint8_t *row_bytes = &source[row * FONT_ROW_BYTES];
             for (int col = 0; col < FONT_WIDTH; col++) {
-                int bit = FONT_WIDTH - 1 - col;
-                if (row_bytes[bit / 8] & (1 << (7 - (bit % 8)))) {
+                int byte_index = col / 8;
+                int bit_index = 7 - (col % 8);
+                if (row_bytes[byte_index] & (1 << bit_index)) {
                     glyph[row * FONT_WIDTH + col] = 1;
                 }
             }

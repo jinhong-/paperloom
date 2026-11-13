@@ -53,32 +53,6 @@ void setup_screen_draw(uint8_t *buffer, const setup_screen_info_t *info) {
     /* Start from a clean white panel. */
     draw_fill_rect(buffer, width, height, 0, 0, width, height, EPD_COLOR_WHITE);
 
-    /* Markers around the edge of the picture.
-     *
-     * The panel is wired so that it reads the picture a particular way
-     * round. These markers make it obvious which way that is: the top edge
-     * is marked with red and the bottom with blue, the left edge with
-     * blue and the right with green.
-     *
-     * They are only useful while the layout is being worked out, so they
-     * are drawn only in the debug build. */
-    /* Markers around the edge of the picture.
-     *
-     * The panel is wired so that it reads the picture a particular way
-     * round. These markers make it obvious which way that is: the top edge
-     * is marked with red and the bottom with blue, the left edge with
-     * blue and the right with green.
-     *
-     * They are only useful while the layout is being worked out, so they
-     * are drawn only in the debug build. */
-#ifdef PAPERLOOM_PANEL_DEBUG
-    draw_fill_rect(buffer, width, height, MARGIN, MARGIN, 70, 70, EPD_COLOR_RED);
-    draw_fill_rect(buffer, width, height, width - MARGIN - 70, MARGIN, 70, 70, EPD_COLOR_GREEN);
-    draw_fill_rect(buffer, width, height, MARGIN, height - MARGIN - 70, 70, 70, EPD_COLOR_BLUE);
-    draw_fill_rect(buffer, width, height, width - MARGIN - 70, height - MARGIN - 70, 70, 70,
-                   EPD_COLOR_YELLOW);
-#endif
-
     int y = MARGIN;
 
     /* The title. */

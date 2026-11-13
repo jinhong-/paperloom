@@ -6,7 +6,9 @@
  * of the ecosystem.
  *
  * Each glyph is 17 pixels wide and 24 tall, stored as 3 bytes per row with
- * the leftmost pixel in the most significant bit of the first byte.
+ * the leftmost pixel in the most significant bit of the first byte. The
+ * rows are stored top down: the first row in the table is the top of the
+ * letter.
  */
 
 #ifndef FONT_ASCII_H
