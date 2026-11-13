@@ -58,8 +58,14 @@ export class ScheduleService {
   /**
    * Get the schedule for a device covering the window that contains `now`.
    *
-   * The window is aligned to the device's sync interval so that successive
-   * windows tile the timeline without gaps or overlaps.
+   * The window is aligned to the lookahead, so that successive windows
+   * tile the timeline without gaps or overlaps, and so that a plan is
+   * stable for the whole of the period it covers.
+   *
+   * Aligning it to the check-in interval instead would mean a new window,
+   * and so a new set of times and photos, every time the device checked
+   * in. The device would be told one thing and then another, and the
+   * plan it was following would never be the plan it was given.
    */
   getForDevice(deviceId: number, now: number): ScheduleWindow {
     const device = this.db
@@ -70,7 +76,7 @@ export class ScheduleService {
     if (!device) throw new Error(`unknown device ${deviceId}`);
 
     const policy = this.policyFor(deviceId);
-    const windowStart = this.alignWindowStart(now, policy.syncInterval);
+    const windowStart = this.alignWindowStart(now, policy.lookahead);
     const windowEnd = windowStart + policy.lookahead * 1000;
 
     // Serve a previously materialised window if one exists.
@@ -166,8 +172,8 @@ export class ScheduleService {
   /**
    * Align a timestamp to the start of its sync window.
    */
-  private alignWindowStart(now: number, syncInterval: number): number {
-    const interval = Math.max(1, syncInterval) * 1000;
+  private alignWindowStart(now: number, lookahead: number): number {
+    const interval = Math.max(1, lookahead) * 1000;
     return Math.floor(now / interval) * interval;
   }
 

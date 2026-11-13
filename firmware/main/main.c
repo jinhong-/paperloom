@@ -15,9 +15,11 @@
 #include "epaper.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "nvs.h"
 #include "nvs_flash.h"
 
 #include "board.h"
@@ -81,6 +83,94 @@ static wake_reason_t detect_wake_reason(void) {
 }
 
 /**
+ * How long the reset button has to be held for a hard reset.
+ *
+ * A short press is a soft reset, which restarts the frame and makes it
+ * check in with the server straight away. A long press is a hard reset,
+ * which puts the frame back into setup mode.
+ */
+#define HARD_RESET_HOLD_MS 5000
+
+/**
+ * Wait for the reset button to be released, and say how long it was held.
+ *
+ * A press that is released quickly is a soft reset. A press that is held
+ * for long enough is a hard reset, which puts the frame back into setup
+ * mode.
+ *
+ * @param held_ms  Set to how long the button was held, in milliseconds.
+ * @param released Set to true if the button was released.
+ *
+ * @return true if the button was held long enough for a hard reset.
+ */
+static bool wait_for_reset_button(int64_t *held_ms, bool *released) {
+    int64_t start_ms = 0;
+    time_now(&start_ms);
+
+    *released = false;
+    *held_ms = 0;
+
+    /* Wait for the button to go down first, in case it was already held
+     * when the frame woke. */
+    while (!board_button_pressed(BUTTON_RESET)) {
+        if (!board_any_button_pressed()) {
+            /* The button was tapped and released between sleeps. */
+            return false;
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+
+    while (board_button_pressed(BUTTON_RESET)) {
+        int64_t now_ms = 0;
+        time_now(&now_ms);
+        *held_ms = now_ms - start_ms;
+
+        if (*held_ms >= HARD_RESET_HOLD_MS) {
+            /* Long enough. Stop waiting for the release, so that the
+             * frame does not sit here for as long as the button is
+             * held. */
+            return true;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+
+    *released = true;
+    return false;
+}
+
+/**
+ * Put the frame back into setup mode.
+ *
+ * Everything the frame knows is in one namespace in flash: the Wi-Fi
+ * details, the server, and the key it signs its requests with. Erasing
+ * it makes the frame as good as new, and it comes up in setup mode
+ * because it has no server to talk to.
+ */
+static void factory_reset(void) {
+    ESP_LOGW(TAG, "The reset button was held; erasing the settings and starting again");
+
+    nvs_handle_t nvs;
+    if (nvs_open("paperloom", NVS_READWRITE, &nvs) == ESP_OK) {
+        nvs_erase_all(nvs);
+        nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+
+    /* The Wi-Fi details may also be held by the Wi-Fi driver itself, in
+     * its own namespace. */
+    nvs_handle_t wifi;
+    if (nvs_open("nvs.net80211", NVS_READWRITE, &wifi) == ESP_OK) {
+        nvs_erase_all(wifi);
+        nvs_commit(wifi);
+        nvs_close(wifi);
+    }
+
+    ESP_LOGW(TAG, "The settings have been erased; restarting");
+    esp_restart();
+}
+
+/**
  * The main wake cycle.
  *
  * Returns the number of milliseconds until the device should next wake, or
@@ -92,6 +182,27 @@ static int64_t run_cycle(wake_reason_t reason) {
     time_now(&now_ms);
 
     ESP_LOGI(TAG, "Waking: reason=%d now=%lld", (int)reason, (long long)now_ms);
+
+    /* The reset button.
+     *
+     * A short press restarts the frame, which makes it check in with the
+     * server straight away. A long press puts it back into setup mode.
+     *
+     * The press is only looked for when the frame woke because of a
+     * button. A frame that woke on a timer should not stop for it. */
+    if (reason == WAKE_BUTTON && board_button_pressed(BUTTON_RESET)) {
+        int64_t held_ms = 0;
+        bool released = false;
+
+        if (wait_for_reset_button(&held_ms, &released)) {
+            factory_reset();
+        }
+
+        if (released) {
+            ESP_LOGI(TAG, "The reset button was pressed; restarting");
+            esp_restart();
+        }
+    }
 
     /* 1. Work out what is due.
      *

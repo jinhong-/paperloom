@@ -20,6 +20,13 @@ const schedule = ref<ScheduleItem[]>([]);
 const error = ref<string | null>(null);
 const notice = ref<string | null>(null);
 
+/* What the frame is doing, and whether it is working on it.
+ *
+ * A frame only checks in every so often, so a change does not show up on
+ * the panel straight away. Saying what is happening is the only way to
+ * show that the button did something. */
+const busy = ref<string | null>(null);
+
 const syncInterval = ref(3600);
 const lookahead = ref(10800);
 const timezone = ref("UTC");
@@ -73,6 +80,7 @@ async function savePolicy(): Promise<void> {
   if (!selected.value) return;
   error.value = null;
   notice.value = null;
+  busy.value = "Saving the policy...";
   try {
     await api.updatePolicy(selected.value.id, {
       sync_interval: syncInterval.value,
@@ -80,8 +88,10 @@ async function savePolicy(): Promise<void> {
       timezone: timezone.value,
     });
     notice.value = "Policy saved.";
+    busy.value = "Policy saved. The frame picks it up at its next check-in.";
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
+    busy.value = null;
   }
 }
 
@@ -98,16 +108,20 @@ function useBrowserZone(): void {
 async function toggleGallery(galleryId: number, assigned: boolean): Promise<void> {
   if (!selected.value) return;
   error.value = null;
+  busy.value = assigned ? "Adding the gallery..." : "Removing the gallery...";
   try {
     if (assigned) {
       await api.assignGallery(selected.value.id, galleryId);
       deviceGalleries.value.add(galleryId);
+      busy.value = "The gallery was added. The frame picks it up at its next check-in.";
     } else {
       await api.unassignGallery(selected.value.id, galleryId);
       deviceGalleries.value.delete(galleryId);
+      busy.value = "The gallery was removed. The frame picks it up at its next check-in.";
     }
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
+    busy.value = null;
   }
 }
 
@@ -215,6 +229,19 @@ const describedRules = computed(() =>
   })),
 );
 
+/**
+ * The rule that covers everything.
+ *
+ * This is the frame's default: what it does when no other rule applies.
+ * It is a rule like any other, so there is only one thing to understand.
+ */
+const defaultRule = computed(() => ({
+  daysText: "Every day",
+  startText: "00:00",
+  endText: "00:00",
+  intervalText: describeInterval(syncInterval.value),
+}));
+
 onMounted(async () => {
   await session.reload();
   timezone.value = browserZone;
@@ -300,21 +327,12 @@ onMounted(async () => {
 
       <div class="card">
         <h2>Check-in policy</h2>
-        <div class="field">
-          <label for="sync-interval">Check in every</label>
-          <input id="sync-interval" v-model.number="syncInterval" type="number" min="60" />
-          <div class="small muted">
-            The default, used whenever no rule below applies.
-          </div>
-        </div>
-        <div class="field">
-          <label for="lookahead">Schedule lookahead (seconds)</label>
-          <input id="lookahead" v-model.number="lookahead" type="number" min="3600" />
-          <div class="small muted">
-            How far ahead the server plans the display events. A longer window
-            survives a failed check-in.
-          </div>
-        </div>
+        <p class="small muted">
+          A frame does not need to check in at the same rate all day. During the
+          hours when somebody is around it can be responsive; overnight it can
+          save power by waiting.
+        </p>
+
         <div class="field">
           <label for="timezone">Time zone</label>
           <select id="timezone" v-model="timezone">
@@ -329,21 +347,38 @@ onMounted(async () => {
             The frame's clock is kept in this zone when it plans what to show.
           </div>
         </div>
-        <button @click="savePolicy">Save policy</button>
-      </div>
 
-      <div class="card">
-        <h2>Check-in rules</h2>
-        <p class="small muted">
-          A frame does not need to check in at the same rate all day. During the
-          hours when somebody is around it can be responsive; overnight it can
-          save power by waiting. When two rules cover the same moment, the more
-          specific one wins: a rule for weekdays beats one for every day.
-        </p>
+        <div class="field">
+          <label for="lookahead">Schedule lookahead (seconds)</label>
+          <input id="lookahead" v-model.number="lookahead" type="number" min="3600" />
+          <div class="small muted">
+            How far ahead the server plans the display events. A longer window
+            survives a failed check-in, and the plan stays the same for longer.
+          </div>
+        </div>
+
+        <h3>Rules</h3>
+        <div class="small muted">
+          A rule says how often the frame checks in while it applies. When two
+          rules cover the same moment, the more specific one wins: a rule for
+          weekdays beats one for every day.
+        </div>
 
         <div v-if="describedRules.length === 0" class="empty">
-          No rules. The frame checks in every
-          {{ describeInterval(syncInterval) }} all day.
+          No rules yet. The frame checks in every
+          {{ describeInterval(syncInterval) }} all day. Add a rule to change
+          that at certain times.
+        </div>
+
+        <div
+          class="row between"
+          style="padding: 8px 0; border-bottom: 1px solid var(--line)"
+        >
+          <div>
+            <strong>{{ defaultRule.daysText }}</strong>
+            <span class="muted"> {{ defaultRule.intervalText }} &mdash; the default</span>
+          </div>
+          <span class="muted">Set below</span>
         </div>
 
         <div
@@ -398,6 +433,24 @@ onMounted(async () => {
           <div class="small muted">{{ describeInterval(ruleInterval) }}</div>
         </div>
         <button @click="addRule">Add rule</button>
+
+        <h3 style="margin-top: 24px">The default</h3>
+        <div class="small muted">
+          What the frame does when no rule applies. This is the rule that
+          covers every day and the whole of it.
+        </div>
+        <div class="field">
+          <label for="default-interval">Check in every (seconds)</label>
+          <input id="default-interval" v-model.number="syncInterval" type="number" min="60" />
+          <div class="small muted">{{ describeInterval(syncInterval) }}</div>
+        </div>
+
+        <hr style="margin: 24px 0; border: 0; border-top: 1px solid var(--line)" />
+
+        <button @click="savePolicy" :disabled="busy !== null">
+          {{ busy !== null ? "Working..." : "Save policy" }}
+        </button>
+        <p v-if="busy" class="small muted">{{ busy }}</p>
       </div>
 
       <div class="card">
