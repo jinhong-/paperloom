@@ -439,3 +439,38 @@ const char *schedule_asset_at(size_t index) {
     }
     return s_events[index].asset_hash;
 }
+
+/**
+ * The hashes of the next distinct assets in schedule order.
+ */
+size_t schedule_preferred_assets(const char **hashes, size_t max_count) {
+    if (hashes == NULL || max_count == 0) {
+        return 0;
+    }
+
+    size_t count = 0;
+
+    /* Keep the image that is on the panel when it is still relevant. This
+     * gives the frame a stable fallback if a later download fails. */
+    if (s_displayed[0] != '\0') {
+        hashes[count++] = s_displayed;
+    }
+
+    /* Events are in display order. A repeated asset only occupies one
+     * cache slot. */
+    for (size_t i = 0; i < s_event_count && count < max_count; i++) {
+        const char *hash = s_events[i].asset_hash;
+        bool already_added = false;
+        for (size_t j = 0; j < count; j++) {
+            if (strcmp(hashes[j], hash) == 0) {
+                already_added = true;
+                break;
+            }
+        }
+        if (!already_added) {
+            hashes[count++] = hash;
+        }
+    }
+
+    return count;
+}

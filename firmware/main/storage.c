@@ -18,6 +18,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <utime.h>
 
 #include "driver/gpio.h"
 #include "esp_err.h"
@@ -250,6 +251,64 @@ size_t storage_asset_size(const char *hash) {
 }
 
 /**
+ * The number and total size of the assets in the cache.
+ *
+ * The SD card stores each asset under its full hash. The flash fallback
+ * has no directories and uses a shortened name, so the entries are counted
+ * by their common prefix instead.
+ */
+static void storage_asset_totals(size_t *count, size_t *bytes) {
+    size_t assets = 0;
+    size_t total = 0;
+
+    DIR *dir = opendir(s_using_spiffs ? s_root : s_asset_dir);
+    if (dir != NULL) {
+        struct dirent *entry = NULL;
+        while ((entry = readdir(dir)) != NULL) {
+            const char *name = entry->d_name;
+            bool is_asset = s_using_spiffs ? strncmp(name, "a-", 2) == 0
+                                           : strlen(name) == 64;
+            if (!is_asset) {
+                continue;
+            }
+
+            char path[320];
+            if (s_using_spiffs) {
+                snprintf(path, sizeof(path), "%s/%s", s_root, name);
+            } else {
+                snprintf(path, sizeof(path), "%s/%s", s_asset_dir, name);
+            }
+
+            struct stat st;
+            if (stat(path, &st) == 0 && st.st_size > 0) {
+                assets++;
+                total += (size_t)st.st_size;
+            }
+        }
+        closedir(dir);
+    }
+
+    if (count != NULL) {
+        *count = assets;
+    }
+    if (bytes != NULL) {
+        *bytes = total;
+    }
+}
+
+size_t storage_asset_count(void) {
+    size_t count = 0;
+    storage_asset_totals(&count, NULL);
+    return count;
+}
+
+size_t storage_asset_bytes(void) {
+    size_t bytes = 0;
+    storage_asset_totals(NULL, &bytes);
+    return bytes;
+}
+
+/**
  * Delete a cached asset.
  */
 esp_err_t storage_remove_asset(const char *hash) {
@@ -259,6 +318,124 @@ esp_err_t storage_remove_asset(const char *hash) {
         return ESP_FAIL;
     }
     return ESP_OK;
+}
+
+/**
+ * Mark an asset as the most recently used one.
+ *
+ * FAT and SPIFFS both keep a modification timestamp, so the cache can use
+ * the filesystem rather than a second index. An asset is touched when it
+ * is committed, read, or displayed. Files left by older firmware have no
+ * useful timestamp and therefore naturally become the first eviction
+ * candidates.
+ */
+esp_err_t storage_touch_asset(const char *hash) {
+    char path[256];
+    storage_asset_path(hash, path, sizeof(path));
+
+    if (utime(path, NULL) != 0) {
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
+/**
+ * Whether a hash is in the protected set.
+ */
+static bool storage_is_protected(const char *hash, const char *const *protected_hashes,
+                                 size_t protected_count) {
+    for (size_t i = 0; i < protected_count; i++) {
+        if (protected_hashes[i] != NULL && strcmp(hash, protected_hashes[i]) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Remove the least recently used assets until the cache fits its limits.
+ */
+size_t storage_evict_lru(size_t max_assets, size_t max_bytes,
+                         const char *const *protected_hashes, size_t protected_count) {
+    size_t removed = 0;
+
+    while (true) {
+        size_t count = 0;
+        size_t bytes = 0;
+        storage_asset_totals(&count, &bytes);
+        if (count <= max_assets && bytes <= max_bytes) {
+            break;
+        }
+
+        DIR *dir = opendir(s_using_spiffs ? s_root : s_asset_dir);
+        if (dir == NULL) {
+            break;
+        }
+
+        char oldest_hash[72] = {0};
+        time_t oldest_time = 0;
+        struct dirent *entry = NULL;
+        while ((entry = readdir(dir)) != NULL) {
+            const char *name = entry->d_name;
+            bool is_asset = s_using_spiffs ? strncmp(name, "a-", 2) == 0
+                                           : strlen(name) == 64;
+            if (!is_asset) {
+                continue;
+            }
+
+            char hash[72];
+            if (s_using_spiffs) {
+                strncpy(hash, name + 2, sizeof(hash) - 1);
+                hash[sizeof(hash) - 1] = '\0';
+            } else {
+                strncpy(hash, name, sizeof(hash) - 1);
+                hash[sizeof(hash) - 1] = '\0';
+            }
+
+            char path[320];
+            if (s_using_spiffs) {
+                snprintf(path, sizeof(path), "%s/%s", s_root, name);
+            } else {
+                snprintf(path, sizeof(path), "%s/%s", s_asset_dir, name);
+            }
+
+            struct stat st;
+            if (stat(path, &st) != 0 || st.st_size <= 0) {
+                continue;
+            }
+            if (storage_is_protected(hash, protected_hashes, protected_count)) {
+                continue;
+            }
+
+            if (oldest_hash[0] == '\0' || st.st_mtime < oldest_time ||
+                (st.st_mtime == oldest_time && strcmp(hash, oldest_hash) < 0)) {
+                snprintf(oldest_hash, sizeof(oldest_hash), "%s", hash);
+                oldest_time = st.st_mtime;
+            }
+        }
+        closedir(dir);
+
+        if (oldest_hash[0] == '\0') {
+            break;
+        }
+
+        ESP_LOGI(TAG, "Evicting least recently used asset %s", oldest_hash);
+        if (storage_remove_asset(oldest_hash) != ESP_OK) {
+            break;
+        }
+        removed++;
+
+        /* Removing a file may not reduce the reported total immediately on
+         * every filesystem. Stop if it does not, rather than looping. */
+        size_t new_count = 0;
+        size_t new_bytes = 0;
+        storage_asset_totals(&new_count, &new_bytes);
+        if (new_count >= count && new_bytes >= bytes) {
+            break;
+        }
+    }
+
+    return removed;
 }
 
 /**
@@ -320,6 +497,7 @@ esp_err_t storage_commit_staging(const char *hash, const char *staged_path, uint
     }
 
     ESP_LOGI(TAG, "Cached asset %s", hash);
+    storage_touch_asset(hash);
     return ESP_OK;
 }
 
@@ -357,6 +535,7 @@ esp_err_t storage_read_asset(const char *hash, uint8_t *buffer, size_t buffer_le
         total += n;
     }
     fclose(f);
+    storage_touch_asset(hash);
 
     if (out_len != NULL) {
         *out_len = total;

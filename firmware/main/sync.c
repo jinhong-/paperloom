@@ -959,14 +959,15 @@ static char *build_sync_body(size_t *out_len) {
     }
 
     /* Tell the server what we already hold so it only sends what is
-     * missing. */
+     * missing. The cache is bounded, so report only the assets that the
+     * schedule currently wants rather than every historical file. */
     cJSON *cached = cJSON_AddArrayToObject(root, "cached_assets");
     if (cached != NULL) {
-        size_t count = schedule_event_count();
-        for (size_t i = 0; i < count; i++) {
-            const char *hash = schedule_asset_at(i);
-            if (hash != NULL && storage_has_asset(hash)) {
-                cJSON_AddItemToArray(cached, cJSON_CreateString(hash));
+        const char *preferred[CACHE_MAX_ASSETS];
+        size_t preferred_count = schedule_preferred_assets(preferred, CACHE_MAX_ASSETS);
+        for (size_t i = 0; i < preferred_count; i++) {
+            if (storage_has_asset(preferred[i])) {
+                cJSON_AddItemToArray(cached, cJSON_CreateString(preferred[i]));
             }
         }
     }
@@ -1127,26 +1128,41 @@ sync_result_t process_sync_response(const char *json, size_t len) {
         }
     }
 
-    /* Download the assets we are missing. */
+    /* Download only the assets that the bounded cache should hold.
+     *
+     * The server manifest can contain every missing image in the schedule,
+     * but the device cannot keep all of them. The preferred assets are the
+     * image currently on the panel and the next images in schedule order.
+     * We look them up in the manifest so that the server still controls
+     * the URLs and metadata. */
+    const char *preferred[CACHE_MAX_ASSETS];
+    size_t preferred_count = schedule_preferred_assets(preferred, CACHE_MAX_ASSETS);
+
     cJSON *assets = cJSON_GetObjectItem(root, "assets");
-    if (cJSON_IsObject(assets)) {
-        cJSON *entry = NULL;
-        cJSON_ArrayForEach(entry, assets) {
+    if (cJSON_IsObject(assets) && preferred_count > 0) {
+        /* The preferred set occupies the cache. Any older asset is
+         * disposable and is removed before a new image is staged. */
+        storage_evict_lru(CACHE_MAX_ASSETS, CACHE_MAX_BYTES, preferred, preferred_count);
+
+        for (size_t i = 0; i < preferred_count; i++) {
+            cJSON *entry = cJSON_GetObjectItem(assets, preferred[i]);
             if (!cJSON_IsObject(entry)) {
                 continue;
             }
-            cJSON *hash_item = cJSON_GetObjectItem(entry, "sha256");
-            if (!cJSON_IsString(hash_item) || hash_item->valuestring == NULL) {
-                continue;
-            }
-            const char *hash = hash_item->valuestring;
+
+            const char *hash = preferred[i];
             if (storage_has_asset(hash)) {
+                storage_touch_asset(hash);
                 continue;
             }
             if (sync_download_asset(hash) != SYNC_OK) {
                 ESP_LOGW(TAG, "Could not download asset %s; it will be retried later", hash);
             }
         }
+
+        /* The server may omit an asset from the manifest when it believes
+         * the device already has it. The local cache is authoritative, so
+         * the preferred list is the final set we try to keep. */
     }
 
     cJSON_Delete(root);
@@ -1164,6 +1180,13 @@ sync_result_t sync_download_asset(const char *hash) {
     if (!sync_is_configured()) {
         return SYNC_ERROR;
     }
+
+    /* Make room before opening the staging file. The incoming asset is
+     * protected, so eviction never removes it or the image currently on
+     * the panel. */
+    const char *protected_hashes[2] = {hash, schedule_displayed_asset()};
+    storage_evict_lru(CACHE_MAX_ASSETS, CACHE_MAX_BYTES, protected_hashes,
+                      schedule_displayed_asset()[0] != '\0' ? 2 : 1);
 
     char staged_path[256];
     esp_err_t err = storage_begin_staging(hash, staged_path, sizeof(staged_path));

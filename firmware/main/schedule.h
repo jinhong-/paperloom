@@ -96,6 +96,19 @@ int64_t schedule_ends_at_ms(void);
 const char *schedule_asset_at(size_t index);
 
 /**
+ * The hashes of the next distinct assets in schedule order.
+ *
+ * The current displayed asset is included first when it is present. The
+ * result is what the cache should retain: the image on the panel and the
+ * images that are about to replace it.
+ *
+ * @param hashes     The output buffer.
+ * @param max_count  The capacity of the output buffer.
+ * @return The number of hashes written.
+ */
+size_t schedule_preferred_assets(const char **hashes, size_t max_count);
+
+/**
  * Convert a UTC timestamp to milliseconds since the epoch.
  */
 int64_t utc_to_epoch_ms(int year, int month, int day, int hour, int minute, int second);

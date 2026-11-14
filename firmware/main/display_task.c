@@ -19,6 +19,7 @@
 #include "zlib.h"
 
 #include "app_config.h"
+#include "board.h"
 #include "display_task.h"
 #include "epaper.h"
 #include "schedule.h"
@@ -162,6 +163,10 @@ display_result_t display_task_show_asset(const char *asset_hash) {
 
     if (!storage_has_asset(asset_hash)) {
         ESP_LOGI(TAG, "Asset %s is not cached; downloading", asset_hash);
+        if (!board_wifi_connected() && board_wifi_connect() != ESP_OK) {
+            ESP_LOGW(TAG, "Could not connect to Wi-Fi to download asset %s", asset_hash);
+            return DISPLAY_ERROR;
+        }
         if (sync_download_asset(asset_hash) != SYNC_OK) {
             ESP_LOGW(TAG, "Could not download asset %s", asset_hash);
             return DISPLAY_ERROR;

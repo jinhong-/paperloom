@@ -106,6 +106,15 @@
  * roughly 300 kB; 2 MB leaves generous headroom. */
 #define SYNC_MAX_ASSET_BYTES (2 * 1024 * 1024)
 
+/* The local asset cache is deliberately small.
+ *
+ * A frame cannot hold every image in a long schedule. It keeps the images
+ * closest to the next display and discards older ones as newer images
+ * arrive. The count limit is the primary bound; the byte limit stops a
+ * handful of unusually large images from consuming the whole cache. */
+#define CACHE_MAX_ASSETS 3
+#define CACHE_MAX_BYTES (3 * 1024 * 1024)
+
 /* The largest sleep the device will take.
  *
  * A frame normally wakes every few minutes to show a photo. The limit is
