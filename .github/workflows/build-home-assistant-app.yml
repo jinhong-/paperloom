@@ -46,6 +46,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Prepare image tags
+        id: tags
+        shell: bash
+        env:
+          IMAGE_OWNER: ${{ github.repository_owner }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          owner="${IMAGE_OWNER,,}"
+          echo "version=ghcr.io/${owner}/paperloom-${ARCH}:0.1.0" >> "$GITHUB_OUTPUT"
+          echo "run=ghcr.io/${owner}/paperloom-${ARCH}:run-${GITHUB_RUN_ID}" >> "$GITHUB_OUTPUT"
+
       - name: Build and publish image
         uses: docker/build-push-action@v6
         with:
@@ -54,8 +65,8 @@ jobs:
           platforms: ${{ matrix.platform }}
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/paperloom-${{ matrix.arch }}:${{ github.run_id }}
-            ghcr.io/${{ github.repository_owner }}/paperloom-${{ matrix.arch }}:0.1.0
+            ${{ steps.tags.outputs.version }}
+            ${{ steps.tags.outputs.run }}
           provenance: false
           labels: |
             org.opencontainers.image.title=Paperloom
