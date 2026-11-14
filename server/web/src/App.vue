@@ -13,6 +13,7 @@ const session = useSessionStore();
       <nav v-if="session.signedIn()">
         <RouterLink to="/galleries">Galleries</RouterLink>
         <RouterLink to="/devices">Devices</RouterLink>
+        <RouterLink to="/telegram">Telegram</RouterLink>
         <RouterLink to="/people">People</RouterLink>
       </nav>
       <div class="who">

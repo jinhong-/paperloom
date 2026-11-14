@@ -20,5 +20,11 @@ fi
 
 export PAPERLOOM_COOKIE_SECRET="$(cat "${SECRET_FILE}")"
 
+# The bot's token is set in the management interface, so that each gallery
+# can have its own bot. The poll interval is a server setting.
+if [ -n "${PAPERLOOM_TELEGRAM_POLL_INTERVAL:-}" ]; then
+    export PAPERLOOM_TELEGRAM_POLL_INTERVAL
+fi
+
 cd /app/server
 exec node --enable-source-maps dist/index.js

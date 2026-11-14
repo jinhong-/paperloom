@@ -16,8 +16,12 @@ import { AssetStore } from "./assets/store.js";
 import { registerDeviceApi } from "./api/device.js";
 import { registerEnrollmentApi } from "./api/enrollment.js";
 import { registerManagementApi } from "./api/management.js";
+import { registerTelegramApi } from "./api/telegram.js";
 import { openDatabase, type Db } from "./db/index.js";
+import { GalleryPhotoService } from "./gallery/photos.js";
+import { PhotoQueue, PhotoWorker } from "./queue/photos.js";
 import { ScheduleService } from "./schedule/service.js";
+import { TelegramBotManager } from "./telegram/manager.js";
 
 export interface ServerConfig {
   readonly host: string;
@@ -25,6 +29,10 @@ export interface ServerConfig {
   /** Directory holding the SQLite database and the asset store. */
   readonly dataDir: string;
   readonly logLevel: string;
+  /** Where to reach the Telegram Bot API. */
+  readonly telegramApiBase?: string;
+  /** How often to ask Telegram for updates, in seconds. */
+  readonly telegramPollInterval?: number;
 }
 
 export function loadConfig(): ServerConfig {
@@ -33,6 +41,8 @@ export function loadConfig(): ServerConfig {
     port: Number(process.env.PAPERLOOM_PORT ?? 8080),
     dataDir: process.env.PAPERLOOM_DATA_DIR ?? join(process.cwd(), "data"),
     logLevel: process.env.PAPERLOOM_LOG_LEVEL ?? "info",
+    telegramApiBase: process.env.PAPERLOOM_TELEGRAM_API_BASE,
+    telegramPollInterval: Number(process.env.PAPERLOOM_TELEGRAM_POLL_INTERVAL ?? 3),
   };
 }
 
@@ -41,6 +51,17 @@ export interface BuiltServer {
   readonly db: Db;
   readonly assets: AssetStore;
   readonly schedules: ScheduleService;
+  /** The worker that renders the queued pictures. Not started. */
+  readonly worker: PhotoWorker;
+  /** The bots, and the pollers that go with them. */
+  readonly manager: TelegramBotManager;
+  /**
+   * Wait for the background work started by the bots.
+   *
+   * A bot deals with a picture after it has been collected, so a caller
+   * that needs the picture to have been filed waits here first.
+   */
+  settled(): Promise<void>;
 }
 
 /**
@@ -61,6 +82,24 @@ export async function buildServer(config: ServerConfig): Promise<BuiltServer> {
   const assets = new AssetStore(db, assetRoot, sourceRoot);
   const schedules = new ScheduleService(db, assets);
 
+  /* Pictures sent to the Telegram bot are rendered in the background, so
+   * that the chat is answered straight away rather than after the
+   * rendering. */
+  const photos = new GalleryPhotoService({ db, assets, schedules });
+  const queue = new PhotoQueue({ db, assets, photos });
+  const worker = new PhotoWorker({
+    queue,
+    assets,
+    photos,
+    onError: (job, error) => {
+      app.log.error({ err: error, job: job.id }, "could not render a queued photo");
+    },
+  });
+
+  /* The work in hand is tracked, so that a caller can wait for it to
+   * finish rather than racing it. */
+  const pendingWork = new Set<Promise<void>>();
+
   const app = fastify({
     logger: { level: config.logLevel },
     // The signed-request scheme digests the raw body, so the raw bytes must
@@ -80,6 +119,35 @@ export async function buildServer(config: ServerConfig): Promise<BuiltServer> {
   registerDeviceApi(app, { db, assets, schedules, basePath: deviceBasePath });
   registerEnrollmentApi(app, { db, basePath: deviceBasePath });
   registerManagementApi(app, { db, assets, schedules, basePath: managementBasePath });
+
+  /* Each gallery has its own bot, and the manager holds a poller for
+   * each one. The bots ask Telegram for their updates themselves, so
+   * the server does not have to be reachable from the public internet. */
+  const manager = new TelegramBotManager({
+    db,
+    assets,
+    photos,
+    apiBase: config.telegramApiBase,
+    intervalMs: Math.max(1, config.telegramPollInterval ?? 3) * 1000,
+    onError: (error, botId) => {
+      app.log.error({ err: error, botId }, "could not poll a Telegram bot");
+    },
+  });
+
+  registerTelegramApi(app, {
+    db,
+    assets,
+    schedules,
+    basePath: managementBasePath,
+    manager,
+  });
+
+  /* The bots stop asking Telegram when the server does, so that nothing
+   * is left running in the background after the server has closed. */
+  app.addHook("onClose", async () => {
+    await manager.stopAll();
+    await worker.stop();
+  });
 
   app.get("/healthz", async () => ({ status: "ok" }));
 
@@ -127,15 +195,35 @@ export async function buildServer(config: ServerConfig): Promise<BuiltServer> {
     );
   }
 
-  return { app, db, assets, schedules };
+  return {
+    app,
+    db,
+    assets,
+    schedules,
+    worker,
+    manager,
+    settled: async () => {
+      await manager.settled();
+      while (pendingWork.size > 0) {
+        await Promise.allSettled([...pendingWork]);
+      }
+    },
+  };
 }
 
 async function main(): Promise<void> {
   const config = loadConfig();
-  const { app } = await buildServer(config);
+  const { app, worker, manager } = await buildServer(config);
+
+  /* Pictures sent to the Telegram bot are rendered in the background. */
+  worker.start();
+
+  /* The bots ask Telegram for their updates. */
+  await manager.startAll();
 
   const shutdown = async (signal: string): Promise<void> => {
     app.log.info(`${signal} received, shutting down`);
+    /* Closing the app stops the bots and the worker. */
     await app.close();
     process.exit(0);
   };
@@ -145,6 +233,11 @@ async function main(): Promise<void> {
   await app.listen({ host: config.host, port: config.port });
   app.log.info(`Paperloom server listening on ${config.host}:${config.port}`);
   app.log.info(`Data directory: ${config.dataDir}`);
+
+  const bots = manager.bots();
+  if (bots.length > 0) {
+    app.log.info(`${bots.length} Telegram bot(s) are running.`);
+  }
 }
 
 const isMain = process.argv[1] !== undefined && import.meta.url.endsWith(process.argv[1].replace(/\\/g, "/").split("/").pop() ?? "");
