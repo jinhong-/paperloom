@@ -58,22 +58,26 @@ export class ScheduleService {
   /**
    * Get the schedule for a device covering the window that contains `now`.
    *
-   * The window is aligned to the lookahead, so that successive windows
-   * tile the timeline without gaps or overlaps, and so that a plan is
-   * stable for the whole of the period it covers.
+   * The window is aligned at its end to the lookahead, so that successive
+   * windows tile the timeline without gaps or overlaps, and so that a plan
+   * is stable for the whole of the period it covers.
    *
-   * Aligning it to the check-in interval instead would mean a new window,
-   * and so a new set of times and photos, every time the device checked
-   * in. The device would be told one thing and then another, and the
-   * plan it was following would never be the plan it was given.
+   * Aligning the start as well would push it into the future for part of
+   * each period, and a frame that asked in that part would be told that
+   * its first picture was not until the period began. The frame would sit
+   * showing nothing until then. The start is therefore the frame's own
+   * plan, or the moment it asked.
    *
    * The window also reaches far enough to cover the frame's longest sleep.
    * A frame that checks in every five minutes during the day and sleeps
    * from ten at night until eight in the morning must be given a plan that
    * reaches through the night, or it wakes in the small hours with nothing
    * to show. See `coverageSpan`.
+   *
+   * @param heldRevision The revision of the plan the frame is holding, if
+   *                     it is holding one.
    */
-  getForDevice(deviceId: number, now: number): ScheduleWindow {
+  getForDevice(deviceId: number, now: number, heldRevision?: string): ScheduleWindow {
     const device = this.db
       .prepare("SELECT id, displayed_asset, timezone FROM devices WHERE id = ?")
       .get(deviceId) as
@@ -82,22 +86,29 @@ export class ScheduleService {
     if (!device) throw new Error(`unknown device ${deviceId}`);
 
     const policy = this.policyFor(deviceId);
-    /* The window is a period of time, aligned so that successive windows
-     * tile the timeline without gaps or overlaps.
+    /* The window is a period of time. It has to cover the frame from where
+     * the frame is now until it next checks in, and a little beyond that,
+     * so that a plan survives a check-in that fails.
      *
-     * The period is the span the plan has to cover: the frame's longest
-     * sleep plus the time it asks for. The window is aligned to that
-     * period, so that a plan stays the same for the whole of it. A frame
-     * that retries a sync is then given the schedule it was given the
-     * first time.
+     * The frame is told which plan it is holding, and the plan it is
+     * holding is the one that is extended. That is what keeps the plan
+     * stable: the frame is given the same times and the same photos until
+     * the plan runs out, and a frame that asks again because it did not
+     * hear the first answer is given the same answer.
      *
-     * The end is aligned rather than the start, so that the window always
-     * reaches forward from the frame by the whole of the span. The frame
-     * is somewhere inside the period, and the plan has to cover it from
-     * where it is. */
+     * A frame that holds no plan, or one that holds a plan the server no
+     * longer has, gets a fresh one that starts now.
+     *
+     * The start is never in the future. A frame that asked for a plan in
+     * the first half of a period must not be told that its first picture
+     * is not until the period begins: it would sit showing nothing until
+     * then. The frame only shows the events whose time has arrived, so a
+     * plan that starts now is shown at once. */
     const span = this.coverageSpan(deviceId, policy);
-    const windowEnd = this.alignWindowEnd(now + span * 1000, span);
-    const windowStart = windowEnd - span * 1000;
+
+    const held = this.heldWindow(deviceId, heldRevision);
+    const windowStart = held ? held.windowStart : now;
+    const windowEnd = this.alignWindowEnd(Math.max(now, windowStart) + span * 1000, span);
 
     // Serve a previously materialised window if one exists.
     const stored = this.db
@@ -115,6 +126,40 @@ export class ScheduleService {
     }
 
     return this.materializeForDevice(deviceId, windowStart, windowEnd, policy, device);
+  }
+
+  /**
+   * The window a frame is already holding, if the server still has it.
+   *
+   * The frame tells the server the revision of the plan it is holding. If
+   * the server still has that plan, the plan is the one that is extended,
+   * so that the frame is not given a different set of times and photos
+   * every time it asks.
+   */
+  private heldWindow(
+    deviceId: number,
+    heldRevision: string | undefined,
+  ): { windowStart: number; windowEnd: number } | null {
+    if (!heldRevision) return null;
+
+    const row = this.db
+      .prepare(
+        `SELECT window_start, window_end FROM schedules
+         WHERE device_id = ? AND revision = ?
+         ORDER BY window_end DESC
+         LIMIT 1`,
+      )
+      .get(deviceId, heldRevision) as
+      | { window_start: string; window_end: string }
+      | undefined;
+
+    if (!row) return null;
+
+    const windowStart = Date.parse(row.window_start);
+    const windowEnd = Date.parse(row.window_end);
+    if (!Number.isFinite(windowStart) || !Number.isFinite(windowEnd)) return null;
+
+    return { windowStart, windowEnd };
   }
 
   /**
@@ -252,21 +297,11 @@ export class ScheduleService {
   }
 
   /**
-   * Align a timestamp to the start of its sync window.
-   *
-   * The window is aligned to its own length, so that successive windows
-   * tile the timeline without gaps or overlaps. Aligning it to the
-   * lookahead instead would leave the windows overlapping once the window
-   * is longer than the lookahead, and the same event would then be planned
-   * twice.
-   */
-  private alignWindowStart(now: number, span: number): number {
-    const interval = Math.max(1, span) * 1000;
-    return Math.floor(now / interval) * interval;
-  }
-
-  /**
    * The next moment on the grid, at or after the given time.
+   *
+   * The end of a window is aligned to the window's own length, so that
+   * successive windows tile the timeline without gaps or overlaps, and so
+   * that the plan stays the same for the whole of the period it covers.
    */
   private alignWindowEnd(now: number, span: number): number {
     const interval = Math.max(1, span) * 1000;

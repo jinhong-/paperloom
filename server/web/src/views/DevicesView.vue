@@ -190,11 +190,17 @@ async function removeRule(rule: SyncRule): Promise<void> {
 /**
  * Format a timestamp for display.
  *
+ * The time is in the frame's own time zone, because that is the zone its
+ * rules are written in: a rule that says 08:00 means eight in the
+ * morning where the frame is, so the times of the pictures it is given
+ * have to be shown in that same zone to match.
+ *
  * The time is always in the 24-hour form, whatever the browser's locale
  * says, so that it matches the times the rules are written in.
  */
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleString(undefined, {
+    timeZone: timezone.value,
     month: "short",
     day: "numeric",
     hour: "2-digit",
@@ -495,7 +501,9 @@ onMounted(async () => {
         <p class="small muted">
           The photos this frame will show, and when. The frame is told this
           list at each check-in, so a change here takes effect the next time
-          it wakes up.
+          it wakes up. The times are in the frame's own time zone,
+          {{ timeZoneLabel(timezone) }}, which is the zone its rules are
+          written in.
         </p>
 
         <div v-if="schedule.length === 0" class="empty">

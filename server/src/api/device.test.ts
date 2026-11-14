@@ -337,13 +337,21 @@ test("the schedule is identical across retries", async (t) => {
     "/api/device/sync",
     Buffer.from(JSON.stringify({ device_id: deviceId })),
   );
+  assert.equal(first.status, 200);
+  const firstRevision = (first.body as { schedule: { revision: string } }).schedule.revision;
+
+  /* The frame asks again, saying which plan it is holding. The server
+   * extends that plan rather than making a new one, so the frame is not
+   * told one thing and then another. */
   const second = await signed(
     server,
     keys,
     deviceId,
     "POST",
     "/api/device/sync",
-    Buffer.from(JSON.stringify({ device_id: deviceId })),
+    Buffer.from(
+      JSON.stringify({ device_id: deviceId, schedule_revision: firstRevision }),
+    ),
   );
 
   assert.equal(first.status, 200);
@@ -664,11 +672,63 @@ test("a frame that retries gets the same schedule", async (t) => {
 
   const first = schedules.getForDevice(deviceRowId, Date.now());
   /* A moment later, as if the frame had not got the first answer and
-   * asked again. */
-  const second = schedules.getForDevice(deviceRowId, Date.now() + 45_000);
+   * asked again. The frame tells the server which plan it is holding, so
+   * the server extends that plan rather than making a new one. */
+  const second = schedules.getForDevice(deviceRowId, Date.now() + 45_000, first.revision);
 
   assert.equal(second.revision, first.revision, "the schedule must not change");
   assert.deepEqual(second.items, first.items, "the events must not change");
+});
+
+test("the plan starts now, so a frame gets a picture at once", async (t) => {
+  const server = await makeServer();
+  t.after(async () => {
+    await server.app.close();
+  });
+
+  const { galleryId } = await seedGallery(server);
+  const db = server.db;
+
+  const deviceId = `dev-${randomUUID()}`;
+  const keys = generateKeyPair();
+
+  db.prepare(
+    `INSERT INTO devices (name, device_id, public_key, state, user_id)
+     VALUES ('d', ?, ?, 'claimed', NULL)`,
+  ).run(deviceId, publicKeyToBase64(keys.publicKeyPem));
+
+  const deviceRowId = (
+    db.prepare("SELECT id FROM devices WHERE device_id = ?").get(deviceId) as { id: number }
+  ).id;
+  db.prepare("INSERT INTO device_galleries (device_id, gallery_id) VALUES (?, ?)").run(
+    deviceRowId,
+    galleryId,
+  );
+  db.prepare(
+    `INSERT INTO device_policies (device_id, sync_interval, lookahead) VALUES (?, 3600, 10800)`,
+  ).run(deviceRowId);
+  db.prepare(
+    `INSERT INTO device_sync_rules
+       (device_id, days, start_minute, end_minute, sync_interval, priority)
+     VALUES (?, 127, 480, 1320, 300, 0)`,
+  ).run(deviceRowId);
+
+  const schedules = new ScheduleService(db, server.assets);
+  const now = Date.now();
+  const window = schedules.getForDevice(deviceRowId, now);
+
+  /* The first event must not be in the future.
+   *
+   * A frame that has just been set up, or one that has just checked in,
+   * has nothing to show until its first event arrives. If that first
+   * event were in the future the frame would sit blank, which is what
+   * happened when the window was aligned to a period that had not yet
+   * begun. */
+  assert.ok(window.items.length > 0, "the plan must hold at least one event");
+  assert.ok(
+    window.items[0]!.at <= now,
+    `the first event must be due now, not at ${new Date(window.items[0]!.at).toISOString()}`,
+  );
 });
 
 test("the schedule reaches through the frame's longest sleep", async (t) => {

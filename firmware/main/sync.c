@@ -1122,12 +1122,12 @@ sync_result_t sync_perform(const int64_t *now_ms) {
         ESP_LOGW(TAG, "The server says the clock is out of the window it accepts");
         s_clock_rejected = true;
         time_invalidate();
-
-    /* The request was accepted, so the clock is fine. */
-    s_clock_rejected = false;
         free(response);
         return SYNC_ERROR;
     }
+
+    /* The request was accepted, so the clock is fine. */
+    s_clock_rejected = false;
 
     sync_result_t result = process_sync_response(response, response_len);
 
