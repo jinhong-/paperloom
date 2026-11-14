@@ -47,7 +47,7 @@ async function selectGallery(target: Gallery): Promise<void> {
   error.value = null;
   try {
     photos.value = await api.photos(target.id);
-    rules.value = (await api.galleryScheduleRules(target.id)).rules;
+    rules.value = await api.galleryScheduleRules(target.id);
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   }
@@ -90,7 +90,7 @@ async function addRule(): Promise<void> {
       min_interval: ruleSilent.value ? null : ruleMin.value,
       max_interval: ruleSilent.value ? null : ruleMax.value,
     });
-    rules.value = (await api.galleryScheduleRules(selected.value.id)).rules;
+    rules.value = await api.galleryScheduleRules(selected.value.id);
     notice.value = "The rule has been added.";
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
@@ -108,7 +108,7 @@ async function removeRule(rule: GalleryScheduleRule): Promise<void> {
   error.value = null;
   try {
     await api.removeGalleryScheduleRule(selected.value.id, rule.id);
-    rules.value = (await api.galleryScheduleRules(selected.value.id)).rules;
+    rules.value = await api.galleryScheduleRules(selected.value.id);
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {

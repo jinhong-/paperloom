@@ -452,6 +452,13 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       Number(id),
     );
 
+    /* The way of preparing the pictures is the gallery's, so changing it
+     * changes every picture in the gallery. The pictures are rendered
+     * again from their originals, which takes a moment. */
+    if (body.tone_preset !== undefined) {
+      await photos.rerenderGallery(Number(id));
+    }
+
     invalidateGallery(Number(id));
 
     await reply.send({ status: "ok" });
@@ -477,7 +484,18 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       return;
     }
 
-    await reply.send({ rules: schedules.galleryRulesFor(Number(id)) });
+    const rules = schedules.galleryRulesFor(Number(id));
+    await reply.send(
+      rules.map((rule) => ({
+        id: rule.id,
+        days: rule.days,
+        start_minute: rule.startMinute,
+        end_minute: rule.endMinute,
+        min_interval: rule.minInterval,
+        max_interval: rule.maxInterval,
+        priority: rule.priority,
+      })),
+    );
   });
 
   /**

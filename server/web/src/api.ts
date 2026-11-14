@@ -337,9 +337,7 @@ export const api = {
   /* When a gallery changes its picture */
 
   galleryScheduleRules: (galleryId: number) =>
-    request<{ rules: GalleryScheduleRule[] }>(
-      `/api/galleries/${galleryId}/schedule-rules`,
-    ),
+    request<GalleryScheduleRule[]>(`/api/galleries/${galleryId}/schedule-rules`),
 
   addGalleryScheduleRule: (
     galleryId: number,

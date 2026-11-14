@@ -82,6 +82,96 @@ export class GalleryPhotoService {
   }
 
   /**
+   * Render a gallery's pictures again, and in a new way of preparing them.
+   *
+   * The way a picture is prepared is the gallery's, not the picture's, so
+   * changing it changes every picture in the gallery. The originals are
+   * kept, so the pictures are rendered again from them rather than from
+   * the panel's own six-colour rendering, which cannot be improved by
+   * being rendered again.
+   *
+   * The pictures that are no longer wanted are removed, so that the
+   * storage does not fill up with renderings nobody will ask for.
+   */
+  async rerenderGallery(galleryId: number): Promise<number> {
+    const { db, assets } = this.options;
+
+    const photos = db
+      .prepare(
+        `SELECT id, source_hash, content_hash FROM photos WHERE gallery_id = ?`,
+      )
+      .all(galleryId) as Array<{
+      id: number;
+      source_hash: string;
+      content_hash: string | null;
+    }>;
+
+    if (photos.length === 0) return 0;
+
+    const { renderAsset } = await import("../image.js");
+    const tone = this.toneFor(galleryId);
+
+    /* The renderings that are replaced, so that they can be removed
+     * afterwards. */
+    const replaced = new Set<string>();
+
+    const updatePhoto = db.prepare(
+      "UPDATE photos SET content_hash = ?, byte_size = ? WHERE id = ?",
+    );
+    const insertAsset = db.prepare(
+      "INSERT OR REPLACE INTO photo_assets (photo_id, rotation, content_hash) VALUES (?, ?, ?)",
+    );
+
+    let rendered = 0;
+    for (const photo of photos) {
+      const source = await assets.getSource(photo.source_hash);
+      if (!source) continue;
+
+      const renderedByRotation = new Map<number, { hash: string; size: number }>();
+      for (const rotation of ROTATIONS) {
+        const result = await renderAsset(source, { rotation, tone });
+        const hash = AssetStore.hash(result.data);
+        await assets.put(hash, result.data, PANEL_WIDTH, PANEL_HEIGHT);
+        renderedByRotation.set(rotation, { hash, size: result.data.length });
+      }
+
+      const upright = renderedByRotation.get(0)!;
+
+      /* The old rendering is no longer wanted. */
+      for (const row of db
+        .prepare("SELECT content_hash FROM photo_assets WHERE photo_id = ?")
+        .all(photo.id) as Array<{ content_hash: string }>) {
+        replaced.add(row.content_hash);
+      }
+
+      updatePhoto.run(upright.hash, upright.size, photo.id);
+      for (const [rotation, asset] of renderedByRotation) {
+        insertAsset.run(photo.id, rotation, asset.hash);
+      }
+
+      rendered += 1;
+    }
+
+    /* The replaced renderings are removed, unless a new rendering happens
+     * to have the same bytes, which is the case when the way of preparing
+     * the pictures has not actually changed. */
+    for (const hash of replaced) {
+      const inUse = db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM photo_assets WHERE content_hash = ?
+           UNION ALL
+           SELECT COUNT(*) AS n FROM photos WHERE content_hash = ?`,
+        )
+        .all(hash, hash) as Array<{ n: number }>;
+      if (inUse.every((row) => row.n === 0)) {
+        await assets.remove(hash);
+      }
+    }
+
+    return rendered;
+  }
+
+  /**
    * Add a photo to a gallery and render it for every rotation.
    *
    * The rendering happens here rather than on the device so that the
