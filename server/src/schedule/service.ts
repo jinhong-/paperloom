@@ -298,14 +298,6 @@ export class ScheduleService {
       policy: {
         ...policy,
         timezone: device.timezone || policy.timezone,
-        /* The photos are not planned closer together than the frame checks
-         * in, because the frame can only show a photo when it wakes.
-         *
-         * The interval is the one that applies at the start of the plan,
-         * and not the one that applies now, so that the plan does not
-         * change when the rules around it change. A plan that changed its
-         * own times would no longer be the plan the frame was given. */
-        syncIntervalNow: this.intervalAt(deviceId, windowStart) ?? policy.syncInterval,
       },
       currentAsset: device.displayed_asset ?? undefined,
       lastPhotoId,

@@ -62,16 +62,6 @@ export interface DevicePolicy {
   readonly quietStart: number | null;
   readonly quietEnd: number | null;
   readonly timezone: string;
-  /**
-   * How often the frame checks in at the moment the plan is made, in
-   * seconds.
-   *
-   * The frame can only show a photo when it wakes, and it wakes to check
-   * in. A photo that is planned sooner than the next check-in would be
-   * one the frame slept through, so the photos are never planned closer
-   * together than the frame checks in.
-   */
-  readonly syncIntervalNow?: number;
 }
 
 /** One scheduled display event. */
@@ -323,17 +313,14 @@ export function materializeSchedule(input: MaterializeInput): DisplayEvent[] {
     /* Choose the interval for the *next* display, so the first event lands
      * at the window start and subsequent ones are spaced out.
      *
-     * The photos are never planned closer together than the frame checks
-     * in. The frame can only show a photo when it wakes, and it wakes to
-     * check in, so a photo planned sooner than the next check-in would be
-     * one the frame slept through. It would then show a different photo
-     * at the time the owner was told about, and the schedule in the
-     * management page would not be the one the frame was following. */
+     * The interval is the gallery's own: how often the owner wants the
+     * picture to change. It has nothing to do with how often the frame
+     * checks in with the server. The frame wakes for whichever comes
+     * first, so a picture that falls between two check-ins is still shown
+     * on time: the frame wakes for it, shows it, and goes back to sleep
+     * until the check-in. */
     const span = Math.max(0, gallery.maxInterval - gallery.minInterval);
-    const floorSeconds = Math.max(gallery.minInterval, policy.syncIntervalNow ?? 0);
-    const ceilingSeconds = Math.max(floorSeconds, gallery.maxInterval);
-    const intervalSeconds =
-      floorSeconds + (ceilingSeconds > floorSeconds ? rng.below(ceilingSeconds - floorSeconds + 1) : 0);
+    const intervalSeconds = gallery.minInterval + (span > 0 ? rng.below(span + 1) : 0);
 
     /* An event the plan already has keeps its photo, so that the replay
      * stays in step with the plan and the events that follow carry on
