@@ -59,15 +59,18 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
   }
 
   /**
-   * Discard the materialised schedules of every device that shows a
-   * gallery.
+   * Note that the plans of every device that shows a gallery are to
+   * change.
    *
    * A gallery's contents and policy decide what its devices are shown and
-   * when, so a change to the gallery makes their existing schedule
-   * windows wrong.
+   * when, so a change to the gallery means their plans are out of date.
+   *
+   * The plans are not thrown away. They are changed at each frame's next
+   * check-in, so that the frame and the server keep working to the same
+   * plan until then.
    */
   function invalidateGallery(galleryId: number): void {
-    photos.invalidateGallery(galleryId);
+    photos.invalidateGallery(galleryId, Date.now());
   }
 
   // ---------------------------------------------------------------------
@@ -707,7 +710,7 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
 
     /* The device's schedule changes with its galleries, so the windows
      * that were materialised from the old set are no longer right. */
-    schedules.invalidate(Number(id));
+    schedules.invalidate(Number(id), Date.now());
 
     await reply.send({ status: "ok" });
   });
@@ -730,7 +733,7 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       Number(galleryId),
     );
 
-    schedules.invalidate(Number(id));
+    schedules.invalidate(Number(id), Date.now());
 
     await reply.send({ status: "ok" });
   });
@@ -797,7 +800,7 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       /* The policy decides the window boundaries and how far ahead the
        * schedule is built, so the materialised windows no longer describe
        * what the device should be shown. */
-      schedules.invalidate(Number(id));
+      schedules.invalidate(Number(id), Date.now());
     }
 
     await reply.send({ status: "ok" });
@@ -1061,14 +1064,26 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
     }
 
     const now = Date.now();
-    const window = schedules.getForDevice(Number(id), now);
+
+    /* The plan the frame is following, and the plan it will be following
+     * once the change has reached it.
+     *
+     * The frame is given the plan it is following until it checks in, and
+     * the change is put in at that moment. The projected plan is what it
+     * will be then, so that the owner can see what a change is going to do
+     * before it happens. */
+    const plans = schedules.planWithProjection(Number(id), now);
 
     /* Only the events that are still to come.
      *
      * The window is planned ahead of time, so it holds events the frame
      * has already shown. Those are of no interest to the owner: what they
      * want to see is what the frame is going to show next. */
-    const upcoming = window.items.filter((item) => item.at > now);
+    const upcoming = plans.current.items.filter((item) => item.at > now);
+    const projected =
+      plans.projected === null
+        ? null
+        : plans.projected.items.filter((item) => item.at > now);
 
     /* The photo behind each asset, so the owner sees which picture is
      * going to be shown rather than a hash. */
@@ -1080,9 +1095,8 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       .all() as Array<{ id: number; content_hash: string; filename: string }>;
     const photoByHash = new Map(photos.map((p) => [p.content_hash, p]));
 
-    await reply.send({
-      revision: window.revision,
-      items: upcoming.map((item) => {
+    const describe = (items: typeof plans.current.items) =>
+      items.map((item) => {
         const photo = photoByHash.get(item.asset);
         return {
           at: new Date(item.at).toISOString(),
@@ -1090,7 +1104,15 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
           filename: photo?.filename ?? null,
           photo_id: photo?.id ?? null,
         };
-      }),
+      });
+
+    await reply.send({
+      revision: plans.current.revision,
+      items: describe(upcoming),
+      /* When the plan changes, if it is about to. */
+      handover_at: plans.handoverAt === null ? null : new Date(plans.handoverAt).toISOString(),
+      /* What the plan will be once it has changed. */
+      projected: projected === null ? null : describe(projected),
     });
   });
 

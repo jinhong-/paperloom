@@ -948,3 +948,73 @@ test("the schedule reaches through the frame's longest sleep", async (t) => {
     "the plan must hold events for the small hours, not just the evening",
   );
 });
+
+test("a changed gallery is handed over at the frame's next check-in", async (t) => {
+  const server = await makeServer();
+  t.after(async () => {
+    await server.app.close();
+  });
+
+  const { galleryId } = await seedGallery(server);
+  const db = server.db;
+
+  const deviceId = `dev-${randomUUID()}`;
+  const keys = generateKeyPair();
+
+  db.prepare(
+    `INSERT INTO devices (name, device_id, public_key, state, user_id)
+     VALUES ('d', ?, ?, 'claimed', 1)`,
+  ).run(deviceId, publicKeyToBase64(keys.publicKeyPem));
+
+  const deviceRowId = (
+    db.prepare("SELECT id FROM devices WHERE device_id = ?").get(deviceId) as { id: number }
+  ).id;
+  db.prepare("INSERT INTO device_galleries (device_id, gallery_id) VALUES (?, ?)").run(
+    deviceRowId,
+    galleryId,
+  );
+  db.prepare(
+    `INSERT INTO device_policies (device_id, sync_interval, lookahead) VALUES (?, 3600, 10800)`,
+  ).run(deviceRowId);
+  db.prepare(
+    `INSERT INTO device_sync_rules
+       (device_id, days, start_minute, end_minute, sync_interval, priority)
+     VALUES (?, 127, 480, 1320, 300, 0)`,
+  ).run(deviceRowId);
+
+  const schedules = new ScheduleService(db, server.assets);
+  const now = Date.now();
+
+  /* The frame has a plan, and is working to it. */
+  const first = schedules.getForDevice(deviceRowId, now);
+  assert.ok(first.items.length > 0, "the frame must have a plan");
+
+  /* The gallery changes. The plan is not thrown away: it is to be handed
+   * over at the frame's next check-in. */
+  schedules.invalidate(deviceRowId, now);
+
+  const handover = db
+    .prepare("SELECT handover_at FROM schedules WHERE device_id = ?")
+    .get(deviceRowId) as { handover_at: number | null };
+  assert.ok(handover.handover_at !== null, "the plan must be marked to change");
+  const handoverAt = handover.handover_at!;
+  assert.ok(
+    handoverAt > now,
+    "the change must be in the future, not now",
+  );
+
+  /* The frame is given the plan it is already following, so that the two
+   * are working to the same one. */
+  const second = schedules.getForDevice(deviceRowId, now + 1000);
+  assert.equal(second.revision, first.revision, "the plan must not change yet");
+  assert.deepEqual(second.items, first.items, "the events must not change yet");
+
+  /* The owner can see what the plan will become. */
+  const plans = schedules.planWithProjection(deviceRowId, now + 1000);
+  assert.ok(plans.projected !== null, "the owner must be shown the plan to come");
+  assert.equal(plans.handoverAt, handoverAt);
+
+  /* Once the frame comes back for it, the plan is changed. */
+  const third = schedules.getForDevice(deviceRowId, handoverAt);
+  assert.notEqual(third.revision, first.revision, "the plan must change at the check-in");
+});

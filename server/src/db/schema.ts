@@ -562,4 +562,25 @@ CREATE INDEX idx_pinned_photos_device ON pinned_photos(device_id);
 CREATE INDEX idx_pinned_photos_at ON pinned_photos(at);
 `,
   },
+  {
+    id: "0014_plan_handover",
+    sql: `
+-- The plan a frame is following, and when it changes.
+--
+-- A plan is not thrown away when the gallery it shows changes. The frame
+-- is following a plan, and it must be given the same plan until it is
+-- ready to take a new one, or the two fall out of step: the frame shows a
+-- picture at a time the server does not have, and the times in the
+-- management page are not the times the frame is working to.
+--
+-- The plan is changed at the frame's next check-in, which is the moment
+-- the frame is certain to be in touch. Until then the frame is given the
+-- plan it is already following.
+--
+-- The column says when the plan is to change. It is null while the plan
+-- is current, and holds the moment the change is to take effect once the
+-- gallery has changed.
+ALTER TABLE schedules ADD COLUMN handover_at INTEGER;
+`,
+  },
 ];

@@ -57,6 +57,21 @@ static char s_shown_claim_code[32] = {0};
 #define CLAIM_POLL_INTERVAL_MS 10000
 
 /**
+ * How many times a failed check-in is asked again, and how long to wait
+ * between the attempts.
+ *
+ * A check-in that fails is not left until the next one. The frame checks
+ * in every five minutes by day and every hour overnight, so a failure
+ * that is not retried leaves the frame working to a plan the server has
+ * moved on from, for that whole time.
+ *
+ * The attempts are few and close together, so that a server which is
+ * down does not keep the frame awake for long.
+ */
+#define SYNC_RETRY_COUNT 3
+#define SYNC_RETRY_DELAY_MS 5000
+
+/**
  * Why the device woke.
  */
 typedef enum {
@@ -409,6 +424,31 @@ static int64_t run_cycle(wake_reason_t reason) {
                             sync_clear_forced_request();
                         } else {
                             ESP_LOGW(TAG, "The retry did not work either");
+                        }
+                    }
+                } else {
+                    /* The server did not refuse the request because of the
+                     * clock, so the request itself failed: the server was
+                     * not there, or it did not answer in time, or it
+                     * answered with an error.
+                     *
+                     * It is worth asking again straight away. The frame
+                     * is awake, it has the network, and the alternative is
+                     * to sleep for another five minutes, or for an hour
+                     * overnight, still working to a plan the server has
+                     * moved on from.
+                     *
+                     * The attempts are few and close together, so that a
+                     * server that is down does not keep the frame awake
+                     * for long. */
+                    for (int attempt = 1; attempt <= SYNC_RETRY_COUNT; attempt++) {
+                        ESP_LOGW(TAG, "Sync attempt %d", attempt + 1);
+                        vTaskDelay(pdMS_TO_TICKS(SYNC_RETRY_DELAY_MS));
+
+                        if (sync_perform(&now_ms) == SYNC_OK) {
+                            ESP_LOGI(TAG, "The retry worked");
+                            sync_clear_forced_request();
+                            break;
                         }
                     }
                 }

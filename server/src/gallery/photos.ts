@@ -137,9 +137,11 @@ export class GalleryPhotoService {
       insertAsset.run(photoId, rotation, rendered.hash);
     }
 
-    /* A new photo changes what the gallery can show, so the schedules of
-     * the devices that show it are rebuilt. */
-    this.invalidateGallery(galleryId);
+    /* A new photo changes what the gallery can show, so the plans of the
+     * devices that show it are to change. They change at the frame's next
+     * check-in, so that the frame and the server keep working to the same
+     * plan until then. */
+    this.invalidateGallery(galleryId, Date.now());
 
     /* The photo is pinned to the next check-in of each frame showing the
      * gallery, so that it is shown on the next wake rather than at some
@@ -149,10 +151,14 @@ export class GalleryPhotoService {
       const pins = this.options.pins.pinForGallery(galleryId, photoId, Date.now());
       pinnedTo = pins.map((pin) => ({ deviceId: pin.device_id, at: pin.at }));
 
-      /* The schedules were thrown away above, and the pin changes what
-       * they should contain, so they are thrown away again. */
-      if (pins.length > 0) {
-        this.invalidateGallery(galleryId);
+      /* The plan has to include the pin, and it has to include it now: the
+       * frame's next wake is the moment the picture is pinned to, so
+       * there is no later check-in to wait for.
+       *
+       * The plan is extended rather than handed over, so that the times
+       * already in it do not move. */
+      for (const pin of pins) {
+        this.options.schedules.addPinnedEvent(pin.device_id, pin.at, pin.photo_id);
       }
     }
 
@@ -171,16 +177,19 @@ export class GalleryPhotoService {
    * gallery.
    *
    * A gallery's contents and policy decide what its devices are shown and
-   * when, so a change to the gallery makes their existing schedule
-   * windows wrong.
+   * when, so a change to the gallery makes their plans out of date.
+   *
+   * The plan is not thrown away. It is handed over at the frame's next
+   * check-in, so that the frame and the server are working to the same
+   * plan until then.
    */
-  invalidateGallery(galleryId: number): void {
+  invalidateGallery(galleryId: number, now: number): void {
     const { db, schedules } = this.options;
     const devices = db
       .prepare("SELECT device_id FROM device_galleries WHERE gallery_id = ?")
       .all(galleryId) as Array<{ device_id: number }>;
     for (const device of devices) {
-      schedules.invalidate(device.device_id);
+      schedules.invalidate(device.device_id, now);
     }
   }
 }
