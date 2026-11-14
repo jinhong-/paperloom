@@ -503,7 +503,9 @@ onMounted(async () => {
           list at each check-in, so a change here takes effect the next time
           it wakes up. The times are in the frame's own time zone,
           {{ timeZoneLabel(timezone) }}, which is the zone its rules are
-          written in.
+          written in. The list reaches as far as the frame's next check-in
+          plus the lookahead, so there is always something to show even if a
+          check-in fails.
         </p>
 
         <div v-if="schedule.length === 0" class="empty">
@@ -511,7 +513,7 @@ onMounted(async () => {
         </div>
 
         <div v-else class="schedule-list">
-          <div v-for="(item, index) in schedule.slice(0, 24)" :key="index" class="schedule-item">
+          <div v-for="(item, index) in schedule" :key="index" class="schedule-item">
             <div
               v-if="item.photo_id"
               class="photo-preview photo-preview-small"

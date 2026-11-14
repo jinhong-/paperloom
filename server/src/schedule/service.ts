@@ -267,25 +267,22 @@ export class ScheduleService {
 
     /* How far the plan has to reach.
      *
-     * The lookahead is how far ahead the plan is planned, and it is what
-     * the plan is for. The plan also has to reach the frame's next
-     * check-in, because that is when the frame wakes and asks for more;
-     * a plan that stops short of it would leave the frame with nothing to
-     * show.
+     * The plan has to cover the frame's next check-in, because that is
+     * when the frame wakes and asks for more. A plan that stops short of
+     * it would leave the frame with nothing to show.
      *
-     * The two are separate things and are not added together. A frame that
-     * checks in every five minutes and plans three hours ahead needs a
-     * plan that reaches three hours ahead, not three hours and five
-     * minutes: the check-in is when the frame asks, not how far the plan
-     * reaches.
+     * It has to reach the lookahead beyond that as well, so that a
+     * check-in that fails does not leave the frame with nothing to show.
+     * The two are therefore added: a frame that checks in every five
+     * minutes and plans three hours ahead needs a plan that reaches three
+     * hours and five minutes, so that it is still showing something three
+     * hours after the check-in it is waiting for.
      *
      * The plan is never shortened. A plan that already reaches further is
      * left as it is, so that the times in it do not move. */
-    const lookaheadEnd = now + span * 1000;
     const windowEnd = Math.max(
       current?.windowEnd ?? 0,
-      lookaheadEnd,
-      nextCheckIn,
+      nextCheckIn + span * 1000,
     );
 
     const items = materializeSchedule({

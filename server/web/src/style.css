@@ -357,6 +357,11 @@ tr:last-child td {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  /* The plan covers the whole lookahead, which is a good few dozen
+   * pictures. The list scrolls rather than making the page endless. */
+  max-height: 480px;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .schedule-item {
