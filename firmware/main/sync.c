@@ -805,6 +805,17 @@ bool sync_is_due(const int64_t *now_ms) {
 
 /**
  * The time at which the device should next wake to sync.
+ *
+ * The server's time is used, because the frame's own clock drifts while it
+ * sleeps and cannot be relied on. The time the server gives can therefore
+ * already be in the past by the frame's reckoning: the server's clock says
+ * the next check-in is five minutes away, but the frame's clock says that
+ * moment was twenty minutes ago.
+ *
+ * A time in the past means the check-in is due now, so the frame wakes
+ * again shortly rather than treating it as a time in the future. It must
+ * not be allowed to turn into a sleep of no time at all, which would leave
+ * the frame asleep until something else woke it.
  */
 bool sync_next_wake(const int64_t *now_ms, int64_t *wake_ms) {
     if (!sync_is_configured()) {
@@ -820,6 +831,12 @@ bool sync_next_wake(const int64_t *now_ms, int64_t *wake_ms) {
     int64_t next = 0;
     if (parse_iso8601_ms(s_next_sync_at, &next) != ESP_OK) {
         *wake_ms = *now_ms + 60000;
+        return true;
+    }
+
+    if (next <= *now_ms) {
+        /* The check-in is already due by the frame's clock. */
+        *wake_ms = *now_ms;
         return true;
     }
 

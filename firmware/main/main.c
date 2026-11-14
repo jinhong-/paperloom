@@ -484,9 +484,29 @@ static int64_t run_cycle(wake_reason_t reason) {
         wake_in = -1;
     }
 
+    ESP_LOGI(TAG, "DIAG now=%lld next_event=%lld next_sync=%lld",
+             (long long)now_ms,
+             (long long)(have_event ? next_event_ms : -1),
+             (long long)(have_sync ? next_sync_ms : -1));
+
+    /* The delay is how long until the frame wakes. A negative number means
+     * the moment has already passed, which happens when the frame's clock
+     * is behind the server's and the server's time for the next check-in
+     * is in the past by the frame's reckoning.
+     *
+     * A negative number must never be taken as "sleep until something
+     * wakes us", because that would leave the frame asleep indefinitely
+     * and the picture on the panel would never change. It means wake
+     * shortly, so that the frame picks up the new schedule and shows the
+     * next picture. */
     int64_t delay = (wake_in < 0) ? -1 : (wake_in - now_ms);
     if (delay >= 0 && delay < 1000) {
         /* Never spin: always sleep at least a second. */
+        delay = 1000;
+    }
+    if (delay < 0 && wake_in >= 0) {
+        /* The moment has passed. Wake again shortly. */
+        ESP_LOGW(TAG, "The next wake has already passed; waking again shortly");
         delay = 1000;
     }
 

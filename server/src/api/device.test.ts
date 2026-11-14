@@ -672,12 +672,89 @@ test("a frame that retries gets the same schedule", async (t) => {
 
   const first = schedules.getForDevice(deviceRowId, Date.now());
   /* A moment later, as if the frame had not got the first answer and
-   * asked again. The frame tells the server which plan it is holding, so
-   * the server extends that plan rather than making a new one. */
-  const second = schedules.getForDevice(deviceRowId, Date.now() + 45_000, first.revision);
+   * asked again. The plan is stored, so the frame is given the same one. */
+  const second = schedules.getForDevice(deviceRowId, Date.now() + 45_000);
 
   assert.equal(second.revision, first.revision, "the schedule must not change");
   assert.deepEqual(second.items, first.items, "the events must not change");
+});
+
+test("the plan grows rather than being replaced", async (t) => {
+  const server = await makeServer();
+  t.after(async () => {
+    await server.app.close();
+  });
+
+  const { galleryId } = await seedGallery(server);
+  const db = server.db;
+
+  const deviceId = `dev-${randomUUID()}`;
+  const keys = generateKeyPair();
+
+  db.prepare(
+    `INSERT INTO devices (name, device_id, public_key, state, user_id)
+     VALUES ('d', ?, ?, 'claimed', NULL)`,
+  ).run(deviceId, publicKeyToBase64(keys.publicKeyPem));
+
+  const deviceRowId = (
+    db.prepare("SELECT id FROM devices WHERE device_id = ?").get(deviceId) as { id: number }
+  ).id;
+  db.prepare("INSERT INTO device_galleries (device_id, gallery_id) VALUES (?, ?)").run(
+    deviceRowId,
+    galleryId,
+  );
+  /* A short interval, so that the plan holds events close together and
+   * the extension is visible. */
+  db.prepare("UPDATE galleries SET min_interval = 60, max_interval = 60 WHERE id = ?").run(
+    galleryId,
+  );
+  db.prepare(
+    `INSERT INTO device_policies (device_id, sync_interval, lookahead) VALUES (?, 3600, 10800)`,
+  ).run(deviceRowId);
+  db.prepare(
+    `INSERT INTO device_sync_rules
+       (device_id, days, start_minute, end_minute, sync_interval, priority)
+     VALUES (?, 127, 480, 1320, 300, 0)`,
+  ).run(deviceRowId);
+
+  const schedules = new ScheduleService(db, server.assets);
+  const now = Date.now();
+
+  const first = schedules.getForDevice(deviceRowId, now);
+  assert.ok(first.items.length > 0, "the plan must hold some events");
+
+  /* The plan has to be extended when it no longer reaches far enough.
+   * Time is moved on past the end of the plan to bring that about. */
+  const stored = db
+    .prepare("SELECT window_end FROM schedules WHERE device_id = ?")
+    .get(deviceRowId) as { window_end: string };
+  const later = Date.parse(stored.window_end) + 60_000;
+  const second = schedules.getForDevice(deviceRowId, later);
+
+  /* The events that are still in the plan keep their times and their
+   * photos. A frame that is working to a time is never told that the time
+   * has moved.
+   *
+   * The events that have long since passed are dropped, because the frame
+   * knows from its own memory which ones it has already shown. */
+  const keepFrom = later - 30 * 60 * 1000;
+  const firstTimes = first.items.map((e) => e.at).filter((at) => at > keepFrom);
+  const secondTimes = second.items.map((e) => e.at);
+
+  assert.ok(firstTimes.length > 0, "the plan must hold some recent events");
+  for (const at of firstTimes) {
+    assert.ok(secondTimes.includes(at), `the event at ${at} must still be there`);
+  }
+
+  /* And the plan has grown, so that it reaches further than it did. */
+  assert.ok(
+    second.items.length > first.items.length,
+    "the plan must be extended with more events",
+  );
+  assert.ok(
+    second.items[second.items.length - 1]!.at > first.items[first.items.length - 1]!.at,
+    "the new events must come after the old ones",
+  );
 });
 
 test("the plan starts now, so a frame gets a picture at once", async (t) => {

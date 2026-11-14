@@ -127,11 +127,17 @@ export class Rng {
 /**
  * Derive the seed for a materialisation.
  *
- * The window start is included so that a later window produces a different
- * sequence, while repeated calls within the same window do not.
+ * The seed depends on the device alone, so that a frame has one endless
+ * stream of intervals and photos. A plan is then just the start of that
+ * stream: the part of it that has been planned so far. When more is needed,
+ * the stream is continued rather than started again, so the times and the
+ * photos already in the plan keep their places and new ones follow on.
+ *
+ * The stream is therefore the same for a frame however many times it is
+ * planned, and the plan can be rebuilt byte-for-byte.
  */
-function seedFor(deviceId: string, windowStart: number): Buffer {
-  return createHash("sha256").update(`${deviceId}:${windowStart}`).digest();
+function seedFor(deviceId: string): Buffer {
+  return createHash("sha256").update(`${deviceId}`).digest();
 }
 
 /**
@@ -216,6 +222,12 @@ export function localMinuteOfDay(epochMs: number, timezone = "UTC"): number {
 
 export interface MaterializeInput {
   readonly deviceId: string;
+  /**
+   * Where the plan starts.
+   *
+   * The first event is placed at this moment, so that a frame which has
+   * just woken and has nothing cached still gets an image to show.
+   */
   readonly windowStart: number;
   /**
    * The end of the window the events are planned for.
@@ -226,14 +238,13 @@ export interface MaterializeInput {
    */
   readonly windowEnd?: number;
   /**
-   * The time the schedule is being built for.
+   * The plan the frame already has, if it has one.
    *
-   * The window start is aligned to the sync interval and so is usually a
-   * little in the past. The first event is placed at this time instead,
-   * so that a device which has just woken gets something to show at once
-   * rather than waiting for the next slot.
+   * The events in it keep their times and their photos. The new events are
+   * added after them, so the plan grows rather than being replaced, and
+   * the frame is never told that a time it is working to has moved.
    */
-  readonly now?: number;
+  readonly existing?: readonly DisplayEvent[];
   readonly candidates: readonly Candidate[];
   readonly galleries: readonly GalleryPolicy[];
   readonly policy: DevicePolicy;
@@ -246,10 +257,13 @@ export interface MaterializeInput {
 /**
  * Materialise the display events for a window.
  *
- * The window runs from `windowStart` to `windowStart + policy.lookahead`.
- * Events are generated forward from the start; the first event is placed at
- * the start itself so that a device which has just woken and has nothing
- * cached still gets an image to show.
+ * The events are generated forward from the start of the plan; the first
+ * event is placed at the start itself so that a device which has just
+ * woken and has nothing cached still gets an image to show.
+ *
+ * When the frame already has a plan, the stream is continued from it. The
+ * intervals and the photos in the existing plan keep their places, and the
+ * new events follow on after them.
  *
  * Events falling inside quiet hours are skipped entirely: the panel keeps
  * whatever it is already showing, which needs no refresh.
@@ -258,7 +272,7 @@ export function materializeSchedule(input: MaterializeInput): DisplayEvent[] {
   const { deviceId, windowStart, candidates, galleries, policy } = input;
   if (candidates.length === 0 || galleries.length === 0) return [];
 
-  const rng = new Rng(seedFor(deviceId, windowStart));
+  const rng = new Rng(seedFor(deviceId));
   const windowEnd = input.windowEnd ?? windowStart + policy.lookahead * 1000;
 
   const events: DisplayEvent[] = [];
@@ -274,6 +288,18 @@ export function materializeSchedule(input: MaterializeInput): DisplayEvent[] {
   let lastPhotoId = input.lastPhotoId;
   let currentAsset = input.currentAsset;
 
+  /* The plan the frame already has.
+   *
+   * The events in it were made from this same stream, so replaying the
+   * stream reproduces them: the same intervals and the same photos, in
+   * the same order. The replay is run over them, and the events that
+   * follow are the new ones.
+   *
+   * While replaying, the photo that was chosen is taken from the plan
+   * rather than being chosen again, so that the stream stays in step. */
+  const existing = input.existing ?? [];
+  const existingByAt = new Map(existing.map((e) => [e.at, e]));
+
   // Guard against a pathological policy producing an unbounded loop.
   const maxEvents = 10_000;
 
@@ -285,12 +311,19 @@ export function materializeSchedule(input: MaterializeInput): DisplayEvent[] {
     const span = Math.max(0, gallery.maxInterval - gallery.minInterval);
     const intervalSeconds = gallery.minInterval + (span > 0 ? rng.below(span + 1) : 0);
 
+    /* An event the plan already has keeps its photo, so that the replay
+     * stays in step with the plan and the events that follow carry on
+     * from where the plan left off. */
+    const already = existingByAt.get(cursor);
+
     // Select a photo from this gallery's pool.
     const pool = candidates.filter((c) => c.belongsTo === gallery.galleryId);
     const usable = pool.length > 0 ? pool : candidates;
 
     let picked: Candidate | undefined;
-    if (gallery.rotationMode === "sequential") {
+    if (already) {
+      picked = candidates.find((c) => c.contentHash === already.asset);
+    } else if (gallery.rotationMode === "sequential") {
       picked = pickSequential(usable, lastPhotoId, currentAsset);
     } else {
       picked = pickWeighted(usable, rng, lastPhotoId);

@@ -246,7 +246,7 @@ export function registerDeviceApi(app: FastifyInstance, options: DeviceApiOption
     );
 
     const now = Date.now();
-    const window = schedules.getForDevice(auth.id, now, body.schedule_revision);
+    const window = schedules.getForDevice(auth.id, now);
 
     /* Where the owner manages the frame. The dashboard lives at the root
      * of the server, so this is the address of the server itself. */
