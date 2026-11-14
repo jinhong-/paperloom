@@ -1,0 +1,31 @@
+name: Firmware Build
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firmware-build-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  firmware:
+    name: Firmware / compile
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install ESP-IDF
+        uses: espressif/install-esp-idf-action@v1
+        with:
+          version: "v6.0.1"
+
+      - name: Build the firmware
+        working-directory: firmware
+        run: idf.py build
