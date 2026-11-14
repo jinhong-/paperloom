@@ -293,52 +293,21 @@ static void send_init_sequence(void) {
 }
 
 /**
- * Write one half of the image through one chip select, turned by half a
- * turn.
- *
- * The panel is mounted the other way up, so the picture is turned by half
- * a turn on its way there: the last row becomes the first, and the
- * rightmost pixel becomes the leftmost.
- *
- * The turn is done as the picture is sent, rather than into a second
- * buffer, which would cost another 960,000 bytes of memory for no
- * benefit.
- *
- * The picture is split between two driver chips, each with its own chip
- * select. The first chip select takes the first half of each row and the
- * second the other half. After the turn, the first half is the *right* of
- * the picture, so the two chip selects swap over.
- *
- * A half turn also swaps the two pixels within each byte, because the
- * pixel on the left of a pair ends up on the right of the pair it moves
- * to. The bytes are read from the other end of the row to go with it.
+ * Write one half of the image through one chip select.
  *
  * @param image     The full frame buffer.
- * @param cs_index  0 for the first chip select, 1 for the second.
+ * @param cs_index  0 for the left half, 1 for the right half.
+ * @param offset    Byte offset of this half within each row.
  */
-static void send_image_half_turned(const uint8_t *image, int cs_index) {
+static void send_image_half(const uint8_t *image, int cs_index, size_t offset) {
     uint8_t line_buf[HALF_ROW_BYTES];
 
     cs_select(cs_index, 0);
     write_command(DTM);
-
-    /* The rows are sent from the bottom of the picture upwards, so that
-     * the last row of the picture is the first row on the panel. */
-    for (uint16_t i = 0; i < PANEL_HEIGHT; i++) {
-        uint16_t row = (uint16_t)(PANEL_HEIGHT - 1 - i);
-        const uint8_t *src = image + (size_t)row * PANEL_ROW_STRIDE_BYTES;
-
-        /* The bytes are read from the other end of the row, and the two
-         * pixels within each byte swap places. */
-        for (size_t j = 0; j < HALF_ROW_BYTES; j++) {
-            size_t index = cs_index == 0 ? PANEL_ROW_STRIDE_BYTES - 1 - j : HALF_ROW_BYTES - 1 - j;
-            uint8_t byte = src[index];
-            line_buf[j] = (uint8_t)((byte << 4) | (byte >> 4));
-        }
-
+    for (uint16_t row = 0; row < PANEL_HEIGHT; row++) {
+        memcpy(line_buf, image + (size_t)row * PANEL_ROW_STRIDE_BYTES + offset, HALF_ROW_BYTES);
         spi_write_data(line_buf, HALF_ROW_BYTES);
     }
-
     cs_select(cs_index, 1);
 }
 
@@ -384,11 +353,8 @@ void epaper_display(uint8_t *image) {
     ESP_LOGI(TAG, "Display update: %d bytes", PANEL_FRAME_BYTES);
 
     send_init_sequence();
-
-    /* The panel is mounted the other way up, so the picture is turned by
-     * half a turn on its way there. */
-    send_image_half_turned(image, 0);
-    send_image_half_turned(image, 1);
+    send_image_half(image, 0, 0);
+    send_image_half(image, 1, HALF_ROW_BYTES);
     display_refresh();
 
     ESP_LOGI(TAG, "Display update complete");
