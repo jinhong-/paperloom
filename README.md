@@ -120,10 +120,10 @@ show.
 ### Home Assistant
 
 Paperloom is also available as a Home Assistant add-on. Add this repository
-under **Settings → Add-ons → Add-on store → ⋮ → Repositories**:
+under **Settings → Apps → App store → ⋮ → Repositories**:
 
 ```text
-https://github.com/jinhong-/paperloom
+https://github.com/jinhong-/paperloom#hassio-release
 ```
 
 Install and start **Paperloom**, then open it from the add-on page. The
@@ -131,9 +131,13 @@ management interface is exposed through Home Assistant ingress. Physical
 frames should use the add-on's direct port (`8099`) rather than the ingress
 URL, because ingress URLs contain a per-session token.
 
-The add-on stores its database and photo assets in `/share/paperloom`, so
-they survive restarts and upgrades. See `hassio/README.md` for installation
-and device-network details.
+GitHub Actions prepares the `hassio-release` branch with a self-contained copy
+of the server. Home Assistant builds the app image locally, so no container
+registry account or token is required.
+
+The add-on stores its database and photo assets in its private persistent data
+directory (`/data/paperloom`), so they survive restarts and upgrades. See
+`hassio/README.md` for installation and device-network details.
 
 Configuration is by environment variable:
 

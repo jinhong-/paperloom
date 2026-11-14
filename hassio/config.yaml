@@ -3,12 +3,10 @@ slug: paperloom
 version: "0.1.0"
 description: Self-hosted server for Paperloom e-paper photo frames
 url: https://github.com/jinhong-/paperloom
-image: "ghcr.io/jinhong-/paperloom-{arch}:{version}"
 startup: application
 arch:
   - aarch64
   - amd64
-  - armv7
 init: false
 ingress: true
 ingress_port: 8099
@@ -20,13 +18,12 @@ ports:
 ports_description:
   8099/tcp: Direct Paperloom server access for e-paper frames
 map:
-  - addon_config:rw
-  - ssl:ro
+  - type: data
+    path: /data/paperloom
+  - type: ssl
+    read_only: true
 environment:
   PAPERLOOM_HOST: 0.0.0.0
   PAPERLOOM_PORT: "8099"
-  PAPERLOOM_DATA_DIR: /share/paperloom
-options:
-  log_level: info
-schema:
-  log_level: list(trace|debug|info|warn|error|fatal)
+  PAPERLOOM_DATA_DIR: /data/paperloom
+  PAPERLOOM_LOG_LEVEL: info

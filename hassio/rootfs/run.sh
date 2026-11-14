@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-DATA_DIR="${PAPERLOOM_DATA_DIR:-/share/paperloom}"
+DATA_DIR="${PAPERLOOM_DATA_DIR:-/data/paperloom}"
 mkdir -p "${DATA_DIR}"
 
 # The cookie secret is stored with the add-on's persistent data so it

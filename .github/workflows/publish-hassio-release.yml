@@ -1,0 +1,82 @@
+name: Publish Home Assistant release branch
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "server/**"
+      - "hassio/**"
+      - "repository.yaml"
+      - ".github/scripts/build-hassio-release.sh"
+      - ".github/workflows/publish-hassio-release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: hassio-release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RELEASE_BRANCH: hassio-release
+
+jobs:
+  release:
+    name: Generate and verify hassio-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Generate release tree
+        run: bash .github/scripts/build-hassio-release.sh "$RUNNER_TEMP/hassio-release"
+
+      - name: Build and verify image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ runner.temp }}/hassio-release/paperloom
+          file: ${{ runner.temp }}/hassio-release/paperloom/Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: paperloom-verification:local
+          provenance: false
+
+      - name: Smoke-test the image
+        run: |
+          set -euo pipefail
+          container_id=$(docker run -d --rm -p 18099:8099 paperloom-verification:local)
+          trap 'docker rm -f "$container_id" >/dev/null 2>&1 || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18099/healthz >/dev/null 2>&1; then
+              echo "Paperloom health check passed"
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs "$container_id"
+          echo "Paperloom did not become healthy" >&2
+          exit 1
+
+      - name: Publish the prepared branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/hassio-release"
+          git init -q -b "$RELEASE_BRANCH"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "chore: regenerate Home Assistant release tree"
+          git push --force \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "HEAD:refs/heads/${RELEASE_BRANCH}"

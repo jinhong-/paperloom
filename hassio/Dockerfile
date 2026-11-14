@@ -42,10 +42,10 @@ RUN npm ci --omit=dev && npm cache clean --force
 
 COPY --from=builder /app/server/dist ./dist
 COPY --from=builder /app/server/web/dist ./web/dist
-COPY hassio/rootfs/ /
+COPY rootfs/ /
 
 RUN chmod +x /run.sh \
-    && mkdir -p /share/paperloom
+    && mkdir -p /data/paperloom
 
 EXPOSE 8099
 ENTRYPOINT ["/usr/bin/tini", "--"]

@@ -9,16 +9,15 @@ Add this repository in Home Assistant under **Settings → Apps → App store �
 ⋮ → Repositories**:
 
 ```text
-https://github.com/jinhong-/paperloom
+https://github.com/jinhong-/paperloom#hassio-release
 ```
 
 Then install **Paperloom** and start it. The management interface is
 available from the add-on's **Open Web UI** action.
 
-The app images are built by GitHub Actions and published publicly to GitHub
-Container Registry. Home Assistant pulls the image matching the machine's
-architecture, so no local compilation is required on the Home Assistant
-machine.
+GitHub Actions prepares the `hassio-release` branch with a self-contained copy
+of the server. Home Assistant builds the app image on the installation
+machine, so no container registry account or token is required.
 
 ## Device access
 
@@ -35,14 +34,14 @@ with a trusted HTTPS certificate and use that stable URL during setup.
 
 ## Data
 
-The SQLite database, uploaded originals, and rendered assets are stored in:
+The SQLite database, uploaded originals, and rendered assets are stored in the
+add-on's private data directory:
 
 ```text
-/share/paperloom
+/data/paperloom
 ```
 
-They survive add-on restarts and upgrades. The add-on reads the persistent
-`ssl` store only as the Home Assistant Supervisor provides it to add-ons.
+They survive add-on restarts and upgrades.
 
 ## Options
 

@@ -12,6 +12,7 @@ data/
 
 # Home Assistant add-on build output
 hassio/build/
+hassio-release/
 *.tar.gz
 
 # ESP-IDF build output
