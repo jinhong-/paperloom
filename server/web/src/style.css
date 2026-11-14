@@ -223,6 +223,17 @@ label {
   margin-bottom: 16px;
 }
 
+/* A value that is shown, but cannot be changed. */
+.static-value {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 9px 12px;
+  font-size: 14px;
+  word-break: break-all;
+}
+
 .grid-2 {
   display: grid;
   grid-template-columns: 1fr 1fr;

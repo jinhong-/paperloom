@@ -2,7 +2,6 @@
 import { onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
-import { api } from "@/api";
 import { useSessionStore } from "@/stores/session";
 
 const session = useSessionStore();
@@ -15,20 +14,16 @@ const error = ref<string | null>(null);
 const busy = ref(false);
 
 /**
- * Whether the first account can still be made.
+ * Whether the server still has no owner.
  *
- * Only the first account may be made this way. Anybody else is invited
- * by the owner, so the link to the registration page is only offered
- * while it is still possible.
+ * If it has, there is a setup page waiting, and it is offered here
+ * rather than being left for the person to find on their own.
  */
-const registrationOpen = ref(false);
+const setupOpen = ref(false);
 
 onMounted(async () => {
-  try {
-    registrationOpen.value = (await api.registrationOpen()).open;
-  } catch {
-    /* If the server cannot be asked, the link is not offered. */
-  }
+  await session.refreshSetup();
+  setupOpen.value = session.setupOpen === true;
 });
 
 async function submit(): Promise<void> {
@@ -78,8 +73,13 @@ async function submit(): Promise<void> {
       </button>
     </form>
 
-    <p v-if="registrationOpen" class="small muted">
-      No account yet? <RouterLink to="/register">Create one</RouterLink>
-    </p>
+    <div v-if="setupOpen" class="card">
+      <h3>This server has no owner yet</h3>
+      <p class="small muted">
+        Set up the first account to take it on. Everybody else is invited
+        by the owner afterwards.
+      </p>
+      <RouterLink to="/setup" class="button">Set up this server</RouterLink>
+    </div>
   </div>
 </template>

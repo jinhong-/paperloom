@@ -99,6 +99,19 @@ export async function buildServer(config: ServerConfig): Promise<BuiltServer> {
   if (existsSync(webRoot)) {
     await app.register(fastifyStatic, { root: webRoot });
 
+    /* The built UI refers to its assets relatively, so that it works
+     * behind Home Assistant's path-prefixed ingress endpoint.
+     *
+     * That means the browser asks for the assets relative to the page
+     * it is on: the page at /invitation/CODE asks for
+     * /invitation/assets/app.js, not /assets/app.js. The assets only
+     * exist in one place, so they are served from the root of the bundle
+     * however deep the page that wants them is. */
+    app.get("/:any/assets/:file", async (request, reply) => {
+      const { file } = request.params as { any: string; file: string };
+      await reply.sendFile(join("assets", file), webRoot);
+    });
+
     // The client-side router handles everything that is not an API call,
     // so any unknown path falls back to the app shell.
     app.setNotFoundHandler(async (request, reply) => {
