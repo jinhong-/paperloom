@@ -66,6 +66,10 @@ export async function buildServer(config: ServerConfig): Promise<BuiltServer> {
     // The signed-request scheme digests the raw body, so the raw bytes must
     // be preserved for the device API.
     bodyLimit: 32 * 1024 * 1024,
+    // Home Assistant and other reverse proxies terminate TLS in front of
+    // the server. Trust their forwarding headers so cookies and logs use
+    // the original request scheme.
+    trustProxy: true,
   });
 
   app.register(cookie, { secret: process.env.PAPERLOOM_COOKIE_SECRET ?? "paperloom-dev-secret" });
@@ -78,6 +82,16 @@ export async function buildServer(config: ServerConfig): Promise<BuiltServer> {
   registerManagementApi(app, { db, assets, schedules, basePath: managementBasePath });
 
   app.get("/healthz", async () => ({ status: "ok" }));
+
+  // Basic browser security headers for the management UI and API. The UI
+  // needs to be framed by Home Assistant's ingress UI, so same-origin
+  // framing is allowed rather than denied outright.
+  app.addHook("onSend", async (_request, reply, payload) => {
+    reply.header("X-Content-Type-Options", "nosniff");
+    reply.header("Referrer-Policy", "same-origin");
+    reply.header("X-Frame-Options", "SAMEORIGIN");
+    return payload;
+  });
 
   // Serve the management UI if it has been built. The UI is a static
   // bundle produced by `npm run build` in server/web.

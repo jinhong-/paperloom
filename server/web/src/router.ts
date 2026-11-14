@@ -17,7 +17,7 @@ import RegisterView from "@/views/RegisterView.vue";
 const publicRoutes = new Set(["login", "register", "invitation", "claim"]);
 
 export const router = createRouter({
-  history: createWebHistory(),
+  history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
     { path: "/", redirect: "/galleries" },
     { path: "/login", name: "login", component: LoginView },

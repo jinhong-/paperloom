@@ -7,7 +7,12 @@ dist/
 data/
 *.log
 .env
-.env.local
+.env.*
+!.env.example
+
+# Home Assistant add-on build output
+hassio/build/
+*.tar.gz
 
 # ESP-IDF build output
 firmware/build/

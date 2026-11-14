@@ -1,0 +1,13 @@
+.git
+.github
+.gitignore
+**/node_modules
+**/dist
+**/data
+firmware/build
+firmware/managed_components
+firmware/sdkconfig
+firmware/sdkconfig.old
+*.log
+.env
+.env.*

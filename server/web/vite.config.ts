@@ -3,6 +3,9 @@ import vue from "@vitejs/plugin-vue";
 import { fileURLToPath, URL } from "node:url";
 
 export default defineConfig({
+  // Relative URLs let the built UI work both at the server root and
+  // behind Home Assistant's path-prefixed ingress endpoint.
+  base: "./",
   plugins: [vue()],
   resolve: {
     alias: {

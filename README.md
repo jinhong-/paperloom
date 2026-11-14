@@ -117,6 +117,24 @@ drop some photos into it. The photos are converted to the panel's colours
 as they are uploaded, so what you see in the gallery is what the frame will
 show.
 
+### Home Assistant
+
+Paperloom is also available as a Home Assistant add-on. Add this repository
+under **Settings → Add-ons → Add-on store → ⋮ → Repositories**:
+
+```text
+https://github.com/jinhong-/paperloom
+```
+
+Install and start **Paperloom**, then open it from the add-on page. The
+management interface is exposed through Home Assistant ingress. Physical
+frames should use the add-on's direct port (`8099`) rather than the ingress
+URL, because ingress URLs contain a per-session token.
+
+The add-on stores its database and photo assets in `/share/paperloom`, so
+they survive restarts and upgrades. See `hassio/README.md` for installation
+and device-network details.
+
 Configuration is by environment variable:
 
 | Variable | Default | Meaning |

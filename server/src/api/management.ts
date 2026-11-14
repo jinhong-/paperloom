@@ -329,6 +329,7 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
         path: "/",
         httpOnly: true,
         sameSite: "lax",
+        secure: request.protocol === "https",
         maxAge: Math.floor(SESSION_TTL_MS / 1000),
       })
       .send({ status: "ok" });
@@ -769,6 +770,14 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
     if (userId === null) return;
 
     const { id, galleryId } = request.params as { id: string; galleryId: string };
+    const device = db
+      .prepare("SELECT id FROM devices WHERE id = ? AND user_id = ?")
+      .get(Number(id), userId);
+    if (!device) {
+      await reply.code(404).send({ error: "unknown device" });
+      return;
+    }
+
     db.prepare("DELETE FROM device_galleries WHERE device_id = ? AND gallery_id = ?").run(
       Number(id),
       Number(galleryId),
