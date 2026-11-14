@@ -231,13 +231,17 @@ async function testImage(): Promise<Buffer> {
 
 /**
  * An update with a picture in it.
+ *
+ * The sender is who the message is from. A picture is only filed if the
+ * sender has been allowed to send pictures to the bot.
  */
-function pictureUpdate(updateId: number, chatId: number): TelegramUpdate {
+function pictureUpdate(updateId: number, chatId: number, fromId = 555): TelegramUpdate {
   return {
     update_id: updateId,
     message: {
       message_id: updateId * 10,
       chat: { id: chatId, type: "supergroup" },
+      from: { id: fromId, username: `person${fromId}`, first_name: `Person ${fromId}` },
       photo: [
         { file_id: "small", file_unique_id: "u1", file_size: 100 },
         { file_id: "large", file_unique_id: "u2", file_size: 9000 },
@@ -247,7 +251,25 @@ function pictureUpdate(updateId: number, chatId: number): TelegramUpdate {
 }
 
 /**
- * Give a gallery a bot, and a chat to talk to it through.
+ * Let a person send pictures to a bot.
+ */
+async function allowPerson(
+  server: BuiltServer,
+  cookie: string,
+  botId: number,
+  telegramId: string,
+): Promise<void> {
+  const allowed = await server.app.inject({
+    method: "POST",
+    url: `/api/telegram/bots/${botId}/people/${telegramId}/allow`,
+    headers: { cookie },
+    payload: {},
+  });
+  assert.equal(allowed.statusCode, 200, allowed.body);
+}
+
+/**
+ * Give a gallery a bot.
  *
  * Each bot needs its own token, because a bot belongs to one gallery.
  * Returns the bot's id.
@@ -256,7 +278,7 @@ async function setUpBot(
   server: BuiltServer,
   cookie: string,
   galleryId: number,
-  chatId: string,
+  _chatId?: string,
   token = "123456:test-token",
 ): Promise<number> {
   const bot = await server.app.inject({
@@ -276,14 +298,6 @@ async function setUpBot(
     (b) => b.gallery_id === galleryId,
   )!.id;
 
-  const chat = await server.app.inject({
-    method: "POST",
-    url: `/api/telegram/bots/${botId}/chats`,
-    headers: { cookie },
-    payload: { chat_id: chatId, label: "Family chat" },
-  });
-  assert.equal(chat.statusCode, 200, chat.body);
-
   return botId;
 }
 
@@ -299,7 +313,8 @@ test("a picture collected by the poller is queued and rendered into the gallery"
 
   const cookie = await signIn(server);
   const galleryId = await createGallery(server, cookie);
-  await setUpBot(server, cookie, galleryId, "-1001234567890");
+  const botId = await setUpBot(server, cookie, galleryId, "-1001234567890");
+  await allowPerson(server, cookie, botId, "555");
 
   /* Telegram has a picture waiting for the bot to collect. */
   telegram.push("123456:test-token", pictureUpdate(1, -1001234567890));
@@ -369,8 +384,9 @@ test("each gallery's bot files into its own gallery", async (t) => {
   const first = await createGallery(server, cookie);
   const second = await createGallery(server, cookie);
 
-  await setUpBot(server, cookie, first, "-100111", "123456:first-bot");
-  await setUpBot(server, cookie, second, "-100222", "123456:second-bot");
+  const firstBot = await setUpBot(server, cookie, first, "-100111", "123456:first-bot");
+  const secondBot = await setUpBot(server, cookie, second, "-100222", "123456:second-bot");
+  await allowPerson(server, cookie, secondBot, "555");
 
   /* A picture for the second gallery's chat. */
   telegram.push("123456:second-bot", pictureUpdate(1, -100222));
@@ -500,7 +516,7 @@ test("a bot belongs to a gallery, so only its owner can set the token", async (t
   assert.equal(bots.n, 0, "the bot must not be saved");
 });
 
-test("a guest can still add a chat to a bot on their own gallery", async (t) => {
+test("a guest can still allow a person on their own gallery", async (t) => {
   const telegram = await startFakeTelegram(await testImage());
   const server = await makeServer(telegram.url);
 
@@ -520,15 +536,25 @@ test("a guest can still add a chat to a bot on their own gallery", async (t) => 
   });
   const galleryId = (gallery.json() as { id: number }).id;
 
-  await setUpBot(server, guestCookie, galleryId, "-100999");
+  const botId = await setUpBot(server, guestCookie, galleryId);
 
-  const chats = await server.app.inject({
+  const allowed = await server.app.inject({
+    method: "POST",
+    url: `/api/telegram/bots/${botId}/people/555/allow`,
+    headers: { cookie: guestCookie },
+    payload: {},
+  });
+  assert.equal(allowed.statusCode, 200, allowed.body);
+
+  const people = await server.app.inject({
     method: "GET",
-    url: `/api/telegram/bots/1/chats`,
+    url: `/api/telegram/bots/${botId}/people`,
     headers: { cookie: guestCookie },
   });
-  assert.equal(chats.statusCode, 200);
-  assert.equal((chats.json() as unknown[]).length, 1);
+  assert.equal(people.statusCode, 200);
+  const listed = people.json() as { allowed: Array<{ person: { telegramId: string } }> };
+  assert.equal(listed.allowed.length, 1);
+  assert.equal(listed.allowed[0]!.person.telegramId, "555");
 });
 
 test("the same bot cannot be used by two galleries", async (t) => {
@@ -556,7 +582,7 @@ test("the same bot cannot be used by two galleries", async (t) => {
   assert.equal(response.statusCode, 409, "a bot must not be shared by two galleries");
 });
 
-test("a picture from a chat that is not linked is refused", async (t) => {
+test("a picture from somebody who has not been allowed is held", async (t) => {
   const telegram = await startFakeTelegram(await testImage());
   const server = await makeServer(telegram.url);
 
@@ -567,22 +593,84 @@ test("a picture from a chat that is not linked is refused", async (t) => {
 
   const cookie = await signIn(server);
   const galleryId = await createGallery(server, cookie);
-  await setUpBot(server, cookie, galleryId, "-1001234567890");
+  const botId = await setUpBot(server, cookie, galleryId, "-1001234567890");
+
+  /* Nobody has been allowed yet, so the picture is held rather than
+   * filed. */
+  telegram.push("123456:test-token", pictureUpdate(1, -999));
+
+  await server.settled();
+
+  const jobs = server.db.prepare("SELECT COUNT(*) AS n FROM photo_jobs").get() as { n: number };
+  assert.equal(jobs.n, 0, "the picture must not be filed before the owner allows them");
+
+  const held = server.db
+    .prepare("SELECT telegram_id, filename FROM held_photos")
+    .all() as Array<{ telegram_id: string; filename: string }>;
+  assert.equal(held.length, 1, "the picture must be held");
+  assert.equal(held[0]!.telegram_id, "555", "the picture must be held against its sender");
+
+  /* The person is told that it arrived, rather than being met with
+   * silence. */
+  assert.ok(
+    telegram.sent.some((m) => m.includes("waiting for the owner")),
+    `the person must be told it is waiting, got: ${JSON.stringify(telegram.sent)}`,
+  );
+
+  /* The owner is shown somebody to decide about. */
+  const people = await server.app.inject({
+    method: "GET",
+    url: `/api/telegram/bots/${botId}/people`,
+    headers: { cookie },
+  });
+  assert.equal(people.statusCode, 200, people.body);
+  const listed = people.json() as {
+    pending: Array<{ person: { telegramId: string; username: string | null } }>;
+  };
+  assert.equal(listed.pending.length, 1, "the owner must be shown the person");
+  assert.equal(listed.pending[0]!.person.telegramId, "555");
+  assert.equal(listed.pending[0]!.person.username, "person555");
+});
+
+test("a blocked person cannot file a picture", async (t) => {
+  const telegram = await startFakeTelegram(await testImage());
+  const server = await makeServer(telegram.url);
+
+  t.after(async () => {
+    await server.app.close();
+    await telegram.close();
+  });
+
+  const cookie = await signIn(server);
+  const galleryId = await createGallery(server, cookie);
+  const botId = await setUpBot(server, cookie, galleryId, "-1001234567890");
+
+  /* The person is blocked. */
+  const blocked = await server.app.inject({
+    method: "POST",
+    url: `/api/telegram/bots/${botId}/people/555/block`,
+    headers: { cookie },
+    payload: {},
+  });
+  assert.equal(blocked.statusCode, 200, blocked.body);
 
   telegram.push("123456:test-token", pictureUpdate(1, -999));
 
   await server.settled();
 
   const jobs = server.db.prepare("SELECT COUNT(*) AS n FROM photo_jobs").get() as { n: number };
-  assert.equal(jobs.n, 0);
+  assert.equal(jobs.n, 0, "a blocked person must not file a picture");
+
+  const held = server.db.prepare("SELECT COUNT(*) AS n FROM held_photos").get() as { n: number };
+  assert.equal(held.n, 0, "a blocked person's picture must not be held either");
 
   assert.ok(
-    telegram.sent.some((m) => m.includes("not linked")),
-    `the chat must be told it is not linked, got: ${JSON.stringify(telegram.sent)}`,
+    telegram.sent.some((m) => m.includes("not allowed")),
+    `the person must be told they are not allowed, got: ${JSON.stringify(telegram.sent)}`,
   );
 });
 
-test("a chat linked to one bot cannot file into another bot's gallery", async (t) => {
+test("a person allowed for one bot cannot file into another bot's gallery", async (t) => {
   const telegram = await startFakeTelegram(await testImage());
   const server = await makeServer(telegram.url);
 
@@ -595,22 +683,61 @@ test("a chat linked to one bot cannot file into another bot's gallery", async (t
   const first = await createGallery(server, cookie);
   const second = await createGallery(server, cookie);
 
-  /* The chat is linked to the first gallery's bot only. */
-  await setUpBot(server, cookie, first, "-1001234567890", "123456:first-token");
+  /* The person is allowed for the first gallery's bot only. */
+  const firstBot = await setUpBot(server, cookie, first, "-100111", "123456:first-token");
   await setUpBot(server, cookie, second, "-1009999999999", "123456:second-token");
+  await allowPerson(server, cookie, firstBot, "555");
 
-  /* The second bot's token is used, but the chat belongs to the first. */
-  telegram.push("123456:second-token", pictureUpdate(1, -1001234567890));
+  /* The second bot's token is used, but the person is only allowed for
+   * the first. */
+  telegram.push("123456:second-token", pictureUpdate(1, -100111));
 
   await server.settled();
 
   const jobs = server.db.prepare("SELECT COUNT(*) AS n FROM photo_jobs").get() as { n: number };
-  assert.equal(jobs.n, 0, "a chat linked to another bot must not file a picture");
+  assert.equal(jobs.n, 0, "a person allowed for another bot must not file a picture");
 
-  assert.ok(
-    telegram.sent.some((m) => m.includes("not linked")),
-    `the chat must be told it is not linked, got: ${JSON.stringify(telegram.sent)}`,
-  );
+  const held = server.db.prepare("SELECT COUNT(*) AS n FROM held_photos").get() as { n: number };
+  assert.equal(held.n, 1, "the picture must be held, waiting for a decision");
+});
+
+test("allowing a person files the pictures they sent while waiting", async (t) => {
+  const telegram = await startFakeTelegram(await testImage());
+  const server = await makeServer(telegram.url);
+
+  t.after(async () => {
+    await server.app.close();
+    await telegram.close();
+  });
+
+  const cookie = await signIn(server);
+  const galleryId = await createGallery(server, cookie);
+  const botId = await setUpBot(server, cookie, galleryId, "-1001234567890");
+
+  telegram.push("123456:test-token", pictureUpdate(1, -999));
+  await server.settled();
+
+  const before = server.db
+    .prepare("SELECT COUNT(*) AS n FROM photo_jobs")
+    .get() as { n: number };
+  assert.equal(before.n, 0, "the picture is not filed while the person waits");
+
+  const allowed = await server.app.inject({
+    method: "POST",
+    url: `/api/telegram/bots/${botId}/people/555/allow`,
+    headers: { cookie },
+    payload: {},
+  });
+  assert.equal(allowed.statusCode, 200, allowed.body);
+  assert.equal((allowed.json() as { filed: number }).filed, 1, "the held picture must be filed");
+
+  const after = server.db
+    .prepare("SELECT COUNT(*) AS n FROM photo_jobs")
+    .get() as { n: number };
+  assert.equal(after.n, 1, "the picture must be queued once the person is allowed");
+
+  const held = server.db.prepare("SELECT COUNT(*) AS n FROM held_photos").get() as { n: number };
+  assert.equal(held.n, 0, "the picture must not be held any more");
 });
 
 test("a gallery's bot can be taken away again", async (t) => {
@@ -636,8 +763,10 @@ test("a gallery's bot can be taken away again", async (t) => {
   const bots = server.db.prepare("SELECT COUNT(*) AS n FROM telegram_bots").get() as { n: number };
   assert.equal(bots.n, 0, "the bot must be gone");
 
-  const chats = server.db.prepare("SELECT COUNT(*) AS n FROM telegram_chats").get() as { n: number };
-  assert.equal(chats.n, 0, "the chats must be gone with the bot");
+  const people = server.db
+    .prepare("SELECT COUNT(*) AS n FROM telegram_user_access")
+    .get() as { n: number };
+  assert.equal(people.n, 0, "the people must be gone with the bot");
 });
 
 test("the queue can be read from the management API", async (t) => {

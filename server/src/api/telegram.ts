@@ -16,6 +16,7 @@ import { AssetStore } from "../assets/store.js";
 import type { Db } from "../db/index.js";
 import { GalleryPhotoService } from "../gallery/photos.js";
 import { PhotoQueue } from "../queue/photos.js";
+import { TelegramAccessService } from "../telegram/access.js";
 import type { TelegramBotManager } from "../telegram/manager.js";
 
 export interface TelegramApiOptions {
@@ -25,12 +26,15 @@ export interface TelegramApiOptions {
   readonly basePath: string;
   /** The bots, and the pollers that go with them. */
   readonly manager: TelegramBotManager;
+  /** Who may send pictures to a bot. */
+  readonly access: TelegramAccessService;
+  /** The gallery service, for filing a picture that was held. */
+  readonly photos: GalleryPhotoService;
 }
 
 export function registerTelegramApi(app: FastifyInstance, options: TelegramApiOptions): void {
-  const { db, assets, schedules, basePath, manager } = options;
+  const { db, assets, schedules, basePath, manager, access, photos } = options;
 
-  const photos = new GalleryPhotoService({ db, assets, schedules });
   const queue = new PhotoQueue({ db, assets, photos });
 
   /**
@@ -107,7 +111,10 @@ export function registerTelegramApi(app: FastifyInstance, options: TelegramApiOp
       .prepare(
         `SELECT b.id, b.gallery_id, b.username, b.error, b.polling, b.created_at,
                 g.name AS gallery_name,
-                (SELECT COUNT(*) FROM telegram_chats c WHERE c.bot_id = b.id) AS chat_count
+                (SELECT COUNT(*) FROM telegram_user_access a
+                  WHERE a.bot_id = b.id AND a.status = 'allowed') AS allowed_count,
+                (SELECT COUNT(*) FROM telegram_user_access a
+                  WHERE a.bot_id = b.id AND a.status = 'pending') AS pending_count
          FROM telegram_bots b
          JOIN galleries g ON g.id = b.gallery_id
          WHERE g.user_id = ?
@@ -121,7 +128,8 @@ export function registerTelegramApi(app: FastifyInstance, options: TelegramApiOp
       polling: number;
       created_at: string;
       gallery_name: string;
-      chat_count: number;
+      allowed_count: number;
+      pending_count: number;
     }>;
 
     await reply.send({
@@ -132,7 +140,8 @@ export function registerTelegramApi(app: FastifyInstance, options: TelegramApiOp
         username: row.username,
         error: row.error,
         polling: row.polling === 1,
-        chat_count: row.chat_count,
+        allowed_count: row.allowed_count,
+        pending_count: row.pending_count,
         created_at: row.created_at,
       })),
     });
@@ -226,13 +235,16 @@ export function registerTelegramApi(app: FastifyInstance, options: TelegramApiOp
   });
 
   // ---------------------------------------------------------------------
-  // Chats
+  // The people who talk to the bots
   // ---------------------------------------------------------------------
 
   /**
-   * The chats that talk to a gallery's bot.
+   * The people who talk to a bot, and what they may do with it.
+   *
+   * The people waiting to be let in are the ones the owner has to decide
+   * about: somebody who has sent a picture and has not been allowed yet.
    */
-  app.get(`${basePath}/telegram/bots/:id/chats`, async (request, reply) => {
+  app.get(`${basePath}/telegram/bots/:id/people`, async (request, reply) => {
     const userId = await requireUser(request, reply);
     if (userId === null) return;
 
@@ -241,7 +253,7 @@ export function registerTelegramApi(app: FastifyInstance, options: TelegramApiOp
 
     const bot = db
       .prepare(
-        `SELECT b.id FROM telegram_bots b
+        `SELECT b.id, b.gallery_id FROM telegram_bots b
          JOIN galleries g ON g.id = b.gallery_id
          WHERE b.id = ? AND g.user_id = ?`,
       )
@@ -251,81 +263,86 @@ export function registerTelegramApi(app: FastifyInstance, options: TelegramApiOp
       return;
     }
 
-    const chats = db
-      .prepare(
-        `SELECT id, chat_id, label, created_at
-         FROM telegram_chats WHERE bot_id = ? ORDER BY id`,
-      )
-      .all(botId);
-
-    await reply.send(chats);
+    await reply.send({
+      pending: access.pendingFor(botId),
+      allowed: access.allowedFor(botId),
+    });
   });
 
   /**
-   * Add a chat to a gallery's bot.
+   * Allow a person to send pictures to a bot.
+   *
+   * The pictures they sent while they were waiting are then filed, so
+   * that they are not lost.
    */
-  app.post(`${basePath}/telegram/bots/:id/chats`, async (request, reply) => {
+  app.post(`${basePath}/telegram/bots/:id/people/:telegramId/allow`, async (request, reply) => {
     const userId = await requireUser(request, reply);
     if (userId === null) return;
 
-    const { id } = request.params as { id: string };
+    const { id, telegramId } = request.params as { id: string; telegramId: string };
     const botId = Number(id);
 
     const bot = db
       .prepare(
-        `SELECT b.id FROM telegram_bots b
+        `SELECT b.id, b.gallery_id FROM telegram_bots b
          JOIN galleries g ON g.id = b.gallery_id
          WHERE b.id = ? AND g.user_id = ?`,
       )
-      .get(botId, userId);
+      .get(botId, userId) as { id: number; gallery_id: number } | undefined;
     if (!bot) {
       await reply.code(404).send({ error: "unknown bot" });
       return;
     }
 
-    const body = request.body as { chat_id?: string | number; label?: string };
-    const chatId = body?.chat_id === undefined ? "" : String(body.chat_id).trim();
-    if (!chatId) {
-      await reply.code(400).send({ error: "chat_id is required" });
-      return;
+    access.allow(botId, telegramId, userId);
+
+    /* The pictures they sent while they were waiting are filed now. */
+    const held = access.releaseHeld(bot.gallery_id, telegramId);
+    let filed = 0;
+    for (const picture of held) {
+      const bytes = await assets.getSource(picture.sourceHash);
+      if (!bytes) continue;
+      await queue.enqueue(bot.gallery_id, picture.filename, bytes, "telegram");
+      filed++;
     }
 
-    db.prepare(
-      `INSERT INTO telegram_chats (bot_id, chat_id, label)
-       VALUES (?, ?, ?)
-       ON CONFLICT(bot_id, chat_id) DO UPDATE SET
-         label = excluded.label,
-         updated_at = datetime('now')`,
-    ).run(botId, chatId, body.label ?? null);
-
-    await reply.send({ status: "ok", chat_id: chatId });
+    await reply.send({ status: "allowed", filed });
   });
 
   /**
-   * Remove a chat from a gallery's bot.
+   * Block a person from sending pictures to a bot.
+   *
+   * The pictures they sent while they were waiting are thrown away, since
+   * they were only waiting to be seen.
    */
-  app.delete(`${basePath}/telegram/bots/:id/chats/:chatId`, async (request, reply) => {
+  app.post(`${basePath}/telegram/bots/:id/people/:telegramId/block`, async (request, reply) => {
     const userId = await requireUser(request, reply);
     if (userId === null) return;
 
-    const { id, chatId } = request.params as { id: string; chatId: string };
+    const { id, telegramId } = request.params as { id: string; telegramId: string };
     const botId = Number(id);
 
     const bot = db
       .prepare(
-        `SELECT b.id FROM telegram_bots b
+        `SELECT b.id, b.gallery_id FROM telegram_bots b
          JOIN galleries g ON g.id = b.gallery_id
          WHERE b.id = ? AND g.user_id = ?`,
       )
-      .get(botId, userId);
+      .get(botId, userId) as { id: number; gallery_id: number } | undefined;
     if (!bot) {
       await reply.code(404).send({ error: "unknown bot" });
       return;
     }
 
-    db.prepare("DELETE FROM telegram_chats WHERE bot_id = ? AND chat_id = ?").run(botId, chatId);
+    access.block(botId, telegramId, userId);
 
-    await reply.send({ status: "ok" });
+    /* The pictures they sent are thrown away. The bytes themselves are
+     * left alone: they are kept by their content, so the same picture
+     * sent twice is only kept once, and removing it would take away
+     * somebody else's picture too. */
+    const held = access.releaseHeld(bot.gallery_id, telegramId);
+
+    await reply.send({ status: "blocked", discarded: held.length });
   });
 
   // ---------------------------------------------------------------------

@@ -419,4 +419,109 @@ CREATE INDEX idx_pinned_photos_device ON pinned_photos(device_id);
 CREATE INDEX idx_pinned_photos_at ON pinned_photos(at);
 `,
   },
+  {
+    id: "0010_telegram_users",
+    sql: `
+-- The people who talk to the bots.
+--
+-- A Telegram user is not a Paperloom user. They have no account and no
+-- password: their identity is the id Telegram gives them, and the bot's
+-- token is what proves that a message came through the bot it was sent
+-- to. They are kept in their own table rather than in the users table,
+-- because the two are not the same thing and have nothing to do with each
+-- other.
+CREATE TABLE telegram_users (
+  id            INTEGER PRIMARY KEY,
+  -- The id Telegram gives the user. It is unique across Telegram, so it
+  -- identifies the person on every bot.
+  telegram_id   TEXT NOT NULL UNIQUE,
+  -- The name the person has on Telegram, if they have one. It can change,
+  -- and two people can have the same one, so it is only ever shown.
+  username     TEXT,
+  -- The name the person goes by, if they have given one.
+  display_name TEXT,
+  -- The first time a picture from this person was seen.
+  first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- The last time a picture from this person was seen.
+  last_seen_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- What a person may do with a gallery's bot.
+--
+-- The access is per bot, and therefore per gallery: a person allowed to
+-- send pictures to one gallery's bot is not thereby allowed to send
+-- pictures to another's.
+--
+-- A person who has never been seen has no row here at all. When they send
+-- a picture they are given one with the state "pending", which is what
+-- makes them show up in the management interface to be allowed or
+-- blocked.
+--
+-- allowed | pending | blocked
+CREATE TABLE telegram_user_access (
+  id            INTEGER PRIMARY KEY,
+  -- The person.
+  user_id       INTEGER NOT NULL REFERENCES telegram_users(id) ON DELETE CASCADE,
+  -- The bot they are talking to.
+  bot_id        INTEGER NOT NULL REFERENCES telegram_bots(id) ON DELETE CASCADE,
+  -- Whether they may send pictures to this bot.
+  status        TEXT NOT NULL DEFAULT 'pending',
+  -- Who decided, and when.
+  decided_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  decided_at    TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (user_id, bot_id)
+);
+
+CREATE INDEX idx_telegram_user_access_bot ON telegram_user_access(bot_id, status);
+CREATE INDEX idx_telegram_user_access_user ON telegram_user_access(user_id);
+`,
+  },
+  {
+    id: "0011_held_photos",
+    sql: `
+-- The pictures that are waiting for somebody to be allowed.
+--
+-- A picture from a person who has not been allowed yet is held rather
+-- than filed. It is kept here with the picture itself, so that it can be
+-- filed once the owner allows them, and so that the owner can see what
+-- they are being asked about.
+--
+-- The picture is held in the asset store under its own hash, the same as
+-- any other picture, so nothing about it is special.
+CREATE TABLE held_photos (
+  id            INTEGER PRIMARY KEY,
+  -- The gallery the picture was sent to.
+  gallery_id    INTEGER NOT NULL REFERENCES galleries(id) ON DELETE CASCADE,
+  -- The person who sent it.
+  telegram_id   TEXT NOT NULL,
+  -- The hash of the picture, which is where the bytes are kept.
+  source_hash   TEXT NOT NULL,
+  -- The name the picture is known by.
+  filename      TEXT NOT NULL,
+  -- The chat it was sent in, so that the person can be told.
+  chat_id       TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX idx_held_photos_gallery ON held_photos(gallery_id);
+CREATE INDEX idx_held_photos_telegram ON held_photos(telegram_id);
+`,
+  },
+  {
+    id: "0012_drop_telegram_chats",
+    sql: `
+-- The chats are gone.
+--
+-- A chat was authorised as a whole, which meant that everybody in a group
+-- could file pictures into a gallery. The people who talk to a bot are
+-- now authorised one by one, which is finer grained and says who is
+-- actually sending the pictures.
+--
+-- The table is dropped rather than left empty, so that there is only one
+-- way of deciding who may send a picture.
+DROP TABLE IF EXISTS telegram_chats;
+`,
+  },
 ];

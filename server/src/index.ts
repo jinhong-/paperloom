@@ -17,6 +17,7 @@ import { registerDeviceApi } from "./api/device.js";
 import { registerEnrollmentApi } from "./api/enrollment.js";
 import { registerManagementApi } from "./api/management.js";
 import { registerTelegramApi } from "./api/telegram.js";
+import { TelegramAccessService } from "./telegram/access.js";
 import { openDatabase, type Db } from "./db/index.js";
 import { GalleryPhotoService } from "./gallery/photos.js";
 import { PinnedPhotoService } from "./gallery/pinned.js";
@@ -131,10 +132,12 @@ export async function buildServer(config: ServerConfig): Promise<BuiltServer> {
   /* Each gallery has its own bot, and the manager holds a poller for
    * each one. The bots ask Telegram for their updates themselves, so
    * the server does not have to be reachable from the public internet. */
+  const access = new TelegramAccessService({ db });
   const manager = new TelegramBotManager({
     db,
     assets,
     photos,
+    access,
     apiBase: config.telegramApiBase,
     intervalMs: Math.max(1, config.telegramPollInterval ?? 3) * 1000,
     onError: (error, botId) => {
@@ -148,6 +151,8 @@ export async function buildServer(config: ServerConfig): Promise<BuiltServer> {
     schedules,
     basePath: managementBasePath,
     manager,
+    access,
+    photos,
   });
 
   /* The bots stop asking Telegram when the server does, so that nothing

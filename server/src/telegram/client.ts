@@ -25,10 +25,32 @@ export interface TelegramPhoto {
   readonly height?: number;
 }
 
+/**
+ * A person on Telegram.
+ *
+ * The id is unique across Telegram, so it identifies the person on every
+ * bot. The username can change and two people can share one, so it is only
+ * ever shown and never used to tell people apart.
+ */
+export interface TelegramUser {
+  readonly id: number;
+  readonly is_bot?: boolean;
+  readonly username?: string;
+  readonly first_name?: string;
+  readonly last_name?: string;
+}
+
 export interface TelegramMessage {
   readonly message_id: number;
   readonly date?: number;
   readonly chat: { readonly id: number; readonly type?: string };
+  /**
+   * Who sent the message.
+   *
+   * It is empty for messages sent to channels, which the bot cannot send
+   * pictures to anyway.
+   */
+  readonly from?: TelegramUser;
   readonly text?: string;
   readonly caption?: string;
   readonly photo?: readonly TelegramPhoto[];

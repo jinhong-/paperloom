@@ -112,18 +112,41 @@ export interface TelegramBot {
   username: string | null;
   error: string | null;
   polling: boolean;
-  chat_count: number;
+  /** How many people may send pictures to this bot. */
+  allowed_count: number;
+  /** How many people are waiting to be let in. */
+  pending_count: number;
   created_at: string;
 }
 
 /**
- * A chat that talks to a gallery's bot.
+ * A person who talks to a gallery's bot.
+ *
+ * A Telegram person is not a Paperloom user. They have no account and no
+ * password: Telegram's user id is their identity, and the bot's token is
+ * what proves that a message came through the bot it was sent to.
  */
-export interface TelegramChat {
+export interface TelegramPerson {
   id: number;
-  chat_id: string;
-  label: string | null;
-  created_at: string;
+  telegramId: string;
+  username: string | null;
+  displayName: string | null;
+  firstSeenAt: string;
+  lastSeenAt: string;
+}
+
+/**
+ * What a person may do with a bot.
+ */
+export interface TelegramPersonAccess {
+  person: TelegramPerson;
+  botId: number;
+  status: "allowed" | "pending" | "blocked";
+  decidedAt: string | null;
+  /** The picture that is waiting for a decision, if there is one. */
+  heldFilename: string | null;
+  /** How many pictures are waiting for a decision. */
+  heldCount: number;
 }
 
 /**
@@ -388,22 +411,34 @@ export const api = {
       method: "DELETE",
     }),
 
-  telegramChats: (botId: number) => request<TelegramChat[]>(`/api/telegram/bots/${botId}/chats`),
-
-  addTelegramChat: (botId: number, body: { chat_id: string; label?: string }) =>
-    request<{ status: string; chat_id: string }>(`/api/telegram/bots/${botId}/chats`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
-
-  removeTelegramChat: (botId: number, chatId: string) =>
-    request<{ status: string }>(
-      `/api/telegram/bots/${botId}/chats/${encodeURIComponent(chatId)}`,
-      { method: "DELETE" },
-    ),
-
   telegramQueue: () =>
     request<{ pending: number; jobs: PhotoJob[] }>("/api/telegram/queue"),
+
+  /**
+   * The people who talk to a bot, and what they may do with it.
+   */
+  telegramPeople: (botId: number) =>
+    request<{ pending: TelegramPersonAccess[]; allowed: TelegramPersonAccess[] }>(
+      `/api/telegram/bots/${botId}/people`,
+    ),
+
+  /**
+   * Let a person send pictures to a bot.
+   */
+  allowTelegramPerson: (botId: number, telegramId: string) =>
+    request<{ status: string; filed: number }>(
+      `/api/telegram/bots/${botId}/people/${encodeURIComponent(telegramId)}/allow`,
+      { method: "POST", body: JSON.stringify({}) },
+    ),
+
+  /**
+   * Stop a person sending pictures to a bot.
+   */
+  blockTelegramPerson: (botId: number, telegramId: string) =>
+    request<{ status: string; discarded: number }>(
+      `/api/telegram/bots/${botId}/people/${encodeURIComponent(telegramId)}/block`,
+      { method: "POST", body: JSON.stringify({}) },
+    ),
 };
 
 /**

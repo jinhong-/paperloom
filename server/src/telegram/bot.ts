@@ -1,18 +1,22 @@
 /**
  * The Telegram bot.
  *
- * It receives updates from Telegram, works out which chat a picture came
- * from, downloads it, and queues it for rendering.
+ * It receives updates from Telegram, works out who sent a picture,
+ * downloads it, and queues it for rendering.
  *
  * Each gallery has its own bot, so the gallery a picture belongs to is
- * known already: it is the gallery the bot belongs to. A chat has to be
- * known to the bot before its pictures are accepted, so that a chat
- * cannot file pictures into a gallery it has no business touching.
+ * known already: it is the gallery the bot belongs to.
+ *
+ * A person has to be allowed to send pictures to the bot before their
+ * pictures are filed. Somebody who is not allowed yet has their picture
+ * held and are shown to the owner as somebody to allow or to block.
  */
 
 import type { Db } from "../db/index.js";
+import { AssetStore } from "../assets/store.js";
 import { GalleryPhotoService } from "../gallery/photos.js";
 import { PhotoQueue } from "../queue/photos.js";
+import { TelegramAccessService } from "./access.js";
 import {
   largestPhoto,
   TelegramClient,
@@ -37,25 +41,45 @@ export interface TelegramBotOptions {
   readonly client: TelegramClient;
   readonly queue: PhotoQueue;
   readonly photos: GalleryPhotoService;
+  /** Where the pictures are kept. */
+  readonly assets: AssetStore;
   /** The bot this handler belongs to. */
   readonly botId: number;
+  /** Who may send pictures to this bot. */
+  readonly access: TelegramAccessService;
 }
 
 export class TelegramBot {
   constructor(private readonly options: TelegramBotOptions) {}
 
   /**
-   * Whether a chat is known to this bot.
+   * Whether a person may send pictures to this bot.
    *
-   * The chat has to be linked to *this* bot, and not merely to any bot.
-   * The same chat may be linked to several bots, and a chat that belongs
-   * to one gallery must not be able to file pictures into another.
+   * The person has to be allowed for *this* bot, and not merely for any
+   * bot. The same person may be allowed to one gallery and not another,
+   * and allowing them to one says nothing about the other.
    */
-  isKnownChat(chatId: string): boolean {
-    const row = this.options.db
-      .prepare("SELECT 1 FROM telegram_chats WHERE bot_id = ? AND chat_id = ?")
-      .get(this.options.botId, chatId);
-    return row !== undefined;
+  maySend(telegramId: string): boolean {
+    return this.options.access.statusFor(this.options.botId, telegramId) === "allowed";
+  }
+
+  /**
+   * Keep a picture that is waiting for the owner to allow somebody.
+   *
+   * The bytes are put in the asset store under their own hash, the same
+   * as any other picture, and the picture waits in the holding place
+   * until the owner decides.
+   */
+  private async holdPicture(
+    galleryId: number,
+    telegramId: string,
+    filename: string,
+    bytes: Buffer,
+    chatId: string,
+  ): Promise<void> {
+    const sourceHash = AssetStore.hash(bytes);
+    await this.options.assets.putSource(sourceHash, bytes);
+    this.options.access.hold(galleryId, telegramId, sourceHash, filename, chatId);
   }
 
   /**
@@ -71,24 +95,10 @@ export class TelegramBot {
     const message = update.message;
     if (!message) return;
 
-    const chatId = String(message.chat.id);
-
     /* A command is answered by the chat itself rather than by sending
      * it anything. */
     if (message.text?.startsWith("/")) {
       await this.handleCommand(message);
-      return;
-    }
-
-    if (!this.isKnownChat(chatId)) {
-      /* This chat has not been added to the bot. Saying so is better
-       * than silently doing nothing, because otherwise the person
-       * sending pictures has no way of telling a broken bot from an idle
-       * one. */
-      await this.options.client.sendMessage(
-        message.chat.id,
-        "This chat is not linked to the bot yet. Add it in the Paperloom settings to start sending pictures.",
-      );
       return;
     }
 
@@ -97,6 +107,65 @@ export class TelegramBot {
       /* Only pictures are wanted here. Anything else is passed over
        * quietly rather than answered, so that the chat does not fill up
        * with notices. */
+      return;
+    }
+
+    /* Who sent it. Telegram always says, and the id identifies the
+     * person on every bot. */
+    const sender = message.from;
+    if (!sender || sender.is_bot) {
+      return;
+    }
+
+    const telegramId = String(sender.id);
+    const displayName =
+      [sender.first_name, sender.last_name].filter(Boolean).join(" ") || null;
+
+    const status = this.options.access.statusFor(this.options.botId, telegramId);
+
+    if (status === "blocked") {
+      /* They are told, so that they know why nothing happened rather than
+       * being left to wonder. */
+      await this.options.client.sendMessage(
+        message.chat.id,
+        "You are not allowed to send pictures to this frame. Ask the owner to allow you.",
+      );
+      return;
+    }
+
+    if (status === "pending") {
+      /* They are not turned away, but the picture is not filed either.
+       * It is held, and the owner is shown somebody to allow or to block.
+       * The person is told that it was received, so that they know it
+       * arrived rather than being met with silence. */
+      this.options.access.record(
+        this.options.botId,
+        telegramId,
+        sender.username ?? null,
+        displayName,
+      );
+
+      try {
+        const bytes = await this.options.client.download(picture.fileId);
+        await this.holdPicture(
+          galleryId,
+          telegramId,
+          picture.filename,
+          bytes,
+          String(message.chat.id),
+        );
+
+        await this.options.client.sendMessage(
+          message.chat.id,
+          "Your picture has been received and is waiting for the owner to allow you. It will be shown once they do.",
+        );
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        await this.options.client.sendMessage(
+          message.chat.id,
+          `Could not take that picture: ${reason}`,
+        );
+      }
       return;
     }
 
@@ -130,12 +199,17 @@ export class TelegramBot {
     const name = (command ?? "").split("@")[0] ?? "";
 
     if (name === "/start" || name === "/help") {
-      const known = this.isKnownChat(String(message.chat.id));
+      const sender = message.from;
+      const known =
+        sender !== undefined &&
+        !sender.is_bot &&
+        this.maySend(String(sender.id));
+
       await this.options.client.sendMessage(
         message.chat.id,
         known
           ? "Send a picture and it will be queued for the frame."
-          : "Send a picture and it will be queued for the frame, once this chat is added to the bot.",
+          : "Send a picture and it will be queued for the frame, once the owner allows you.",
       );
     }
   }

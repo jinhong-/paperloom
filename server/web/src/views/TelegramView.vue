@@ -1,13 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 
-import { api, type PhotoJob, type TelegramBot, type TelegramChat } from "@/api";
+import { api, type PhotoJob, type TelegramBot, type TelegramPersonAccess } from "@/api";
 import { useSessionStore } from "@/stores/session";
 
 const session = useSessionStore();
 
 const bots = ref<TelegramBot[]>([]);
-const chats = ref<TelegramChat[]>([]);
 const jobs = ref<PhotoJob[]>([]);
 const pending = ref(0);
 const error = ref<string | null>(null);
@@ -16,14 +15,14 @@ const busy = ref(false);
 
 const selectedBot = ref<TelegramBot | null>(null);
 
+/* The people who talk to the selected bot. */
+const peoplePending = ref<TelegramPersonAccess[]>([]);
+const peopleAllowed = ref<TelegramPersonAccess[]>([]);
+
 /** The token for a gallery that is being set up. */
 const token = ref("");
 /** The gallery a new bot is being made for. */
 const newGalleryId = ref<number | null>(null);
-
-/** The chat being added to the selected bot. */
-const newChatId = ref("");
-const newChatLabel = ref("");
 
 /** The galleries that do not have a bot yet. */
 const galleriesWithoutBot = computed(() =>
@@ -47,7 +46,10 @@ async function reload(): Promise<void> {
     if (selectedBot.value) {
       const found = bots.value.find((b) => b.id === selectedBot.value?.id);
       selectedBot.value = found ?? null;
-      if (!found) chats.value = [];
+      if (!found) {
+        peoplePending.value = [];
+        peopleAllowed.value = [];
+      }
     }
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
@@ -87,7 +89,8 @@ async function removeBot(bot: TelegramBot): Promise<void> {
     await api.removeTelegramBot(bot.gallery_id);
     if (selectedBot.value?.id === bot.id) {
       selectedBot.value = null;
-      chats.value = [];
+      peoplePending.value = [];
+      peopleAllowed.value = [];
     }
     await reload();
   } catch (e) {
@@ -96,12 +99,14 @@ async function removeBot(bot: TelegramBot): Promise<void> {
 }
 
 /**
- * Look at the chats that talk to a bot.
+ * Look at the people who talk to a bot.
  */
 async function selectBot(bot: TelegramBot): Promise<void> {
   error.value = null;
   try {
-    chats.value = await api.telegramChats(bot.id);
+    const personList = await api.telegramPeople(bot.id);
+    peoplePending.value = personList.pending;
+    peopleAllowed.value = personList.allowed;
     selectedBot.value = bot;
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
@@ -109,23 +114,23 @@ async function selectBot(bot: TelegramBot): Promise<void> {
 }
 
 /**
- * Add a chat to a bot.
+ * Let a person send pictures to a bot.
+ *
+ * The pictures they sent while they were waiting are filed now, so that
+ * they are not lost.
  */
-async function addChat(): Promise<void> {
-  if (!selectedBot.value || !newChatId.value.trim()) return;
+async function allowPerson(person: TelegramPersonAccess): Promise<void> {
+  if (!selectedBot.value) return;
   busy.value = true;
   error.value = null;
   notice.value = null;
   try {
-    await api.addTelegramChat(selectedBot.value.id, {
-      chat_id: newChatId.value.trim(),
-      label: newChatLabel.value.trim() || undefined,
-    });
-    newChatId.value = "";
-    newChatLabel.value = "";
-    chats.value = await api.telegramChats(selectedBot.value.id);
-    await reload();
-    notice.value = "The chat is now linked to the bot.";
+    const result = await api.allowTelegramPerson(selectedBot.value.id, person.person.telegramId);
+    await selectBot(selectedBot.value);
+    notice.value =
+      result.filed > 0
+        ? `${personName(person)} was allowed, and ${result.filed} picture(s) were filed.`
+        : `${personName(person)} was allowed.`;
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -134,20 +139,38 @@ async function addChat(): Promise<void> {
 }
 
 /**
- * Unlink a chat.
+ * Stop a person sending pictures to a bot.
  */
-async function removeChat(chat: TelegramChat): Promise<void> {
+async function blockPerson(person: TelegramPersonAccess): Promise<void> {
   if (!selectedBot.value) return;
-  if (!confirm(`Stop filing pictures from this chat?`)) return;
+  if (!confirm(`Stop ${personName(person)} from sending pictures to this frame?`)) return;
+  busy.value = true;
   error.value = null;
+  notice.value = null;
   try {
-    await api.removeTelegramChat(selectedBot.value.id, chat.chat_id);
-    chats.value = await api.telegramChats(selectedBot.value.id);
-    await reload();
+    await api.blockTelegramPerson(selectedBot.value.id, person.person.telegramId);
+    await selectBot(selectedBot.value);
+    notice.value = `${personName(person)} was blocked.`;
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    busy.value = false;
   }
 }
+
+/**
+ * The name to show for a person.
+ */
+function personName(person: TelegramPersonAccess): string {
+  const p = person.person;
+  if (p.displayName) return p.displayName;
+  if (p.username) return `@${p.username}`;
+  return `Telegram user ${p.telegramId}`;
+}
+
+/**
+ * The people who are allowed to send pictures, and the ones waiting.
+ */
 </script>
 
 <template>
@@ -175,7 +198,10 @@ async function removeChat(chat: TelegramChat): Promise<void> {
             <div class="small muted">
               <template v-if="bot.username">@{{ bot.username }}</template>
               <template v-else>the bot's name is not known yet</template>
-              · {{ bot.chat_count }} chat{{ bot.chat_count === 1 ? "" : "s" }}
+              · {{ bot.allowed_count }} allowed
+              <template v-if="bot.pending_count > 0">
+                · <strong>{{ bot.pending_count }} waiting</strong>
+              </template>
               <template v-if="bot.polling">· running</template>
               <template v-else>· not running</template>
             </div>
@@ -186,7 +212,7 @@ async function removeChat(chat: TelegramChat): Promise<void> {
             :class="{ 'is-selected': selectedBot?.id === bot.id }"
             @click="selectBot(bot)"
           >
-            {{ selectedBot?.id === bot.id ? "Selected" : "Chats" }}
+            {{ selectedBot?.id === bot.id ? "Selected" : "People" }}
           </button>
           <button class="danger" @click="removeBot(bot)">Remove</button>
         </div>
@@ -235,44 +261,59 @@ async function removeChat(chat: TelegramChat): Promise<void> {
       </div>
     </div>
 
-    <!-- Chats and queue -->
+    <!-- People and queue -->
     <div>
-      <h2>Chats</h2>
+      <h2>People</h2>
 
       <template v-if="selectedBot">
         <p class="small muted" style="margin-bottom: 8px">
-          Chats that may file pictures into {{ selectedBot.gallery_name }}.
-          Add a chat by sending it a picture: the bot will say which chat it is.
+          The people who may send pictures to {{ selectedBot.gallery_name }}.
+          Somebody who is not allowed yet has their picture held until you
+          decide about them.
         </p>
 
-        <div v-if="chats.length === 0" class="empty">No chats linked yet.</div>
+        <div v-if="peoplePending.length > 0" class="card">
+          <h3>Waiting to be allowed</h3>
+          <p class="small muted">
+            These people have sent a picture and are waiting for you to allow
+            or block them.
+          </p>
 
-        <div v-for="chat in chats" :key="chat.id" class="card">
-          <div class="row between">
+          <div v-for="person in peoplePending" :key="person.person.id" class="row between" style="padding: 8px 0; border-bottom: 1px solid var(--line)">
             <div class="grow">
-              <strong>{{ chat.label ?? chat.chat_id }}</strong>
-              <div class="small muted mono">{{ chat.chat_id }}</div>
+              <strong>{{ personName(person) }}</strong>
+              <div class="small muted mono">{{ person.person.telegramId }}</div>
+              <div v-if="person.heldCount > 0" class="small muted">
+                {{ person.heldCount }} picture(s) waiting
+                <template v-if="person.heldFilename"> · {{ person.heldFilename }}</template>
+              </div>
             </div>
-            <button class="danger" @click="removeChat(chat)">Unlink</button>
+            <div class="row">
+              <button :disabled="busy" @click="allowPerson(person)">Allow</button>
+              <button class="danger" :disabled="busy" @click="blockPerson(person)">Block</button>
+            </div>
           </div>
         </div>
 
-        <div class="card">
-          <h2>Add a chat</h2>
-          <div class="field">
-            <label for="telegram-chat">Chat id</label>
-            <input id="telegram-chat" v-model="newChatId" placeholder="-1001234567890" />
+        <h3 style="margin-top: 20px">Allowed</h3>
+
+        <div v-if="peopleAllowed.length === 0" class="empty">
+          Nobody has been allowed yet. A picture sent by somebody else is held
+          until you allow them.
+        </div>
+
+        <div v-for="person in peopleAllowed" :key="person.person.id" class="card">
+          <div class="row between">
+            <div class="grow">
+              <strong>{{ personName(person) }}</strong>
+              <div class="small muted mono">{{ person.person.telegramId }}</div>
+            </div>
+            <button class="danger" :disabled="busy" @click="blockPerson(person)">Block</button>
           </div>
-          <div class="field">
-            <label for="telegram-chat-label">Label</label>
-            <input id="telegram-chat-label" v-model="newChatLabel" placeholder="Family chat" />
-            <div class="small muted">Optional. A name for the chat, so it is easy to tell apart.</div>
-          </div>
-          <button :disabled="busy || !newChatId.trim()" @click="addChat">Link chat</button>
         </div>
       </template>
 
-      <div v-else class="empty">Choose a bot to see the chats that talk to it.</div>
+      <div v-else class="empty">Choose a bot to see the people that talk to it.</div>
 
       <h2 style="margin-top: 24px">Recent pictures</h2>
 

@@ -16,6 +16,7 @@ import type { Db } from "../db/index.js";
 import type { AssetStore } from "../assets/store.js";
 import { GalleryPhotoService } from "../gallery/photos.js";
 import { PhotoQueue } from "../queue/photos.js";
+import { TelegramAccessService } from "./access.js";
 import { TelegramBot } from "./bot.js";
 import { TelegramClient } from "./client.js";
 import { TelegramPoller } from "./poller.js";
@@ -34,6 +35,8 @@ export interface TelegramBotManagerOptions {
   readonly db: Db;
   readonly assets: AssetStore;
   readonly photos: GalleryPhotoService;
+  /** Who may send pictures to a bot. */
+  readonly access: TelegramAccessService;
   /** Where to reach the Bot API. */
   readonly apiBase?: string;
   /** How often to ask Telegram for updates, in milliseconds. */
@@ -159,7 +162,9 @@ export class TelegramBotManager {
       client,
       queue,
       photos: this.options.photos,
+      assets: this.options.assets,
       botId: bot.id,
+      access: this.options.access,
     });
 
     const poller = new TelegramPoller({
