@@ -279,4 +279,30 @@ CREATE TABLE photo_assets (
 CREATE INDEX idx_photo_assets_hash ON photo_assets(content_hash);
 `,
   },
+  {
+    id: "0007_invitations",
+    sql: `
+-- An invitation for somebody to join.
+--
+-- The first account is the owner's, and is made through the registration
+-- page. Everybody after that is invited by the owner, so that nobody can
+-- simply make themselves an account and start looking at the owner's
+-- photos.
+--
+-- The invitation holds the name the person will use and the code they
+-- follow to choose their password. The code is what makes the invitation
+-- usable, so it is stored and checked rather than sent.
+CREATE TABLE invitations (
+  id            INTEGER PRIMARY KEY,
+  username      TEXT NOT NULL,
+  password_hash TEXT,
+  invite_code   TEXT NOT NULL UNIQUE,
+  invited_by    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  accepted_at   TEXT
+);
+
+CREATE INDEX idx_invitations_code ON invitations(invite_code);
+`,
+  },
 ];

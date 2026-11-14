@@ -34,7 +34,10 @@ async function submit(): Promise<void> {
 <template>
   <div style="max-width: 380px; margin: 60px auto">
     <h1>Create an account</h1>
-    <p class="subtitle">The first account owns the frames.</p>
+    <p class="subtitle">
+      This account will own the frames. Anybody else who needs access is
+      invited from the People page once you are signed in.
+    </p>
 
     <form class="card" @submit.prevent="submit">
       <div v-if="error" class="error">{{ error }}</div>

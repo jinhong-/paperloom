@@ -74,7 +74,30 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
   // Sessions
   // ---------------------------------------------------------------------
 
+  /**
+   * Whether the first account can still be made.
+   *
+   * The sign-in page offers registration only when this is true, so that
+   * the page does not offer something the server will refuse.
+   */
+  app.get(`${basePath}/auth/registration`, async (_request, reply) => {
+    const owners = db.prepare("SELECT COUNT(*) AS n FROM users").get() as { n: number };
+    await reply.send({ open: owners.n === 0 });
+  });
+
   app.post(`${basePath}/auth/register`, async (request, reply) => {
+    /* Only the first account may be made this way.
+     *
+     * That account is the owner's, and the one that holds the frames.
+     * Everybody else is invited by the owner, so that nobody can simply
+     * make themselves an account and start looking at the owner's
+     * photos. */
+    const owners = db.prepare("SELECT COUNT(*) AS n FROM users").get() as { n: number };
+    if (owners.n > 0) {
+      await reply.code(403).send({ error: "this server already has an owner" });
+      return;
+    }
+
     const body = request.body as { username?: string; password?: string };
     if (!body?.username || !body?.password) {
       await reply.code(400).send({ error: "username and password are required" });
@@ -98,6 +121,184 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       .run(body.username, hashPassword(body.password));
 
     await reply.send({ user_id: Number(result.lastInsertRowid) });
+  });
+
+  /**
+   * Who has access to this server.
+   *
+   * The owner sees this, and uses it to invite people.
+   */
+  app.get(`${basePath}/users`, async (request, reply) => {
+    const userId = await requireUser(request, reply);
+    if (userId === null) return;
+
+    const users = db
+      .prepare(
+        `SELECT id, username, created_at FROM users ORDER BY id`,
+      )
+      .all() as Array<{ id: number; username: string; created_at: string }>;
+
+    const invitations = db
+      .prepare(
+        `SELECT id, username, invite_code, invited_by, created_at, accepted_at
+         FROM invitations ORDER BY id`,
+      )
+      .all() as Array<{
+        id: number;
+        username: string;
+        invite_code: string;
+        invited_by: number;
+        created_at: string;
+        accepted_at: string | null;
+      }>;
+
+    await reply.send({
+      users,
+      invitations: invitations.map((invitation) => ({
+        id: invitation.id,
+        username: invitation.username,
+        invited_by: invitation.invited_by,
+        created_at: invitation.created_at,
+        accepted_at: invitation.accepted_at,
+      })),
+    });
+  });
+
+  /**
+   * Invite somebody to this server.
+   *
+   * The invitation gives them a code to follow, and they choose their
+   * own password with it. The code is shown once, when it is made, so
+   * that it can be given to them.
+   */
+  app.post(`${basePath}/users/invitations`, async (request, reply) => {
+    const userId = await requireUser(request, reply);
+    if (userId === null) return;
+
+    const body = request.body as { username?: string };
+    const username = body?.username?.trim();
+    if (!username) {
+      await reply.code(400).send({ error: "username is required" });
+      return;
+    }
+
+    const existing = db
+      .prepare("SELECT 1 FROM users WHERE username = ?")
+      .get(username);
+    if (existing) {
+      await reply.code(409).send({ error: "username already taken" });
+      return;
+    }
+
+    const pending = db
+      .prepare("SELECT 1 FROM invitations WHERE username = ? AND accepted_at IS NULL")
+      .get(username);
+    if (pending) {
+      await reply.code(409).send({ error: "there is already an invitation for that name" });
+      return;
+    }
+
+    const inviteCode = randomBytes(12).toString("base64url");
+
+    const result = db
+      .prepare(
+        `INSERT INTO invitations (username, invite_code, invited_by)
+         VALUES (?, ?, ?)`,
+      )
+      .run(username, inviteCode, userId);
+
+    await reply.send({
+      id: Number(result.lastInsertRowid),
+      username,
+      invite_code: inviteCode,
+    });
+  });
+
+  /**
+   * Look at an invitation, so that the person can see who invited them.
+   */
+  app.get(`${basePath}/invitations/:code`, async (request, reply) => {
+    const { code } = request.params as { code: string };
+
+    const invitation = db
+      .prepare(
+        `SELECT username, invited_by, accepted_at FROM invitations WHERE invite_code = ?`,
+      )
+      .get(code) as
+      | { username: string; invited_by: number; accepted_at: string | null }
+      | undefined;
+
+    if (!invitation) {
+      await reply.code(404).send({ error: "unknown invitation" });
+      return;
+    }
+    if (invitation.accepted_at) {
+      await reply.code(410).send({ error: "this invitation has already been used" });
+      return;
+    }
+
+    const inviter = db
+      .prepare("SELECT username FROM users WHERE id = ?")
+      .get(invitation.invited_by) as { username: string } | undefined;
+
+    await reply.send({
+      username: invitation.username,
+      invited_by: inviter?.username ?? null,
+    });
+  });
+
+  /**
+   * Accept an invitation: choose a password and become a user.
+   */
+  app.post(`${basePath}/invitations/:code`, async (request, reply) => {
+    const { code } = request.params as { code: string };
+    const body = request.body as { password?: string };
+
+    if (!body?.password) {
+      await reply.code(400).send({ error: "password is required" });
+      return;
+    }
+    if (body.password.length < 8) {
+      await reply.code(400).send({ error: "password must be at least 8 characters" });
+      return;
+    }
+
+    const invitation = db
+      .prepare(
+        `SELECT id, username, accepted_at FROM invitations WHERE invite_code = ?`,
+      )
+      .get(code) as
+      | { id: number; username: string; accepted_at: string | null }
+      | undefined;
+
+    if (!invitation) {
+      await reply.code(404).send({ error: "unknown invitation" });
+      return;
+    }
+    if (invitation.accepted_at) {
+      await reply.code(410).send({ error: "this invitation has already been used" });
+      return;
+    }
+
+    const existing = db
+      .prepare("SELECT 1 FROM users WHERE username = ?")
+      .get(invitation.username);
+    if (existing) {
+      await reply.code(409).send({ error: "username already taken" });
+      return;
+    }
+
+    const result = db
+      .prepare("INSERT INTO users (username, password_hash) VALUES (?, ?)")
+      .run(invitation.username, hashPassword(body.password));
+
+    db.prepare("UPDATE invitations SET password_hash = ?, accepted_at = ? WHERE id = ?").run(
+      hashPassword(body.password),
+      new Date().toISOString(),
+      invitation.id,
+    );
+
+    await reply.send({ user_id: Number(result.lastInsertRowid), username: invitation.username });
   });
 
   app.post(`${basePath}/auth/login`, async (request, reply) => {

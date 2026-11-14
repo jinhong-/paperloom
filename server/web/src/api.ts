@@ -31,6 +31,22 @@ export interface Photo {
   weight: number;
 }
 
+/** Somebody who has access to this server. */
+export interface User {
+  id: number;
+  username: string;
+  created_at: string;
+}
+
+/** An invitation that has not been taken up yet. */
+export interface Invitation {
+  id: number;
+  username: string;
+  invited_by: number;
+  created_at: string;
+  accepted_at: string | null;
+}
+
 /** A device as the server returns it. */
 export interface DevicePolicy {
   sync_interval: number;
@@ -135,6 +151,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export const api = {
   /* Sessions */
+  registrationOpen: () => request<{ open: boolean }>("/api/auth/registration"),
+
   register: (username: string, password: string) =>
     request<{ user_id: number }>("/api/auth/register", {
       method: "POST",
@@ -150,6 +168,29 @@ export const api = {
   logout: () => request<{ status: string }>("/api/auth/logout", { method: "POST" }),
 
   me: () => request<{ id: number; username: string }>("/api/auth/me"),
+
+  /* People */
+
+  users: () =>
+    request<{ users: User[]; invitations: Invitation[] }>("/api/users"),
+
+  inviteUser: (username: string) =>
+    request<{ id: number; username: string; invite_code: string }>(
+      "/api/users/invitations",
+      {
+        method: "POST",
+        body: JSON.stringify({ username }),
+      },
+    ),
+
+  invitationInfo: (code: string) =>
+    request<{ username: string; invited_by: string | null }>(`/api/invitations/${code}`),
+
+  acceptInvitation: (code: string, password: string) =>
+    request<{ user_id: number; username: string }>(`/api/invitations/${code}`, {
+      method: "POST",
+      body: JSON.stringify({ password }),
+    }),
 
   /* Galleries */
   galleries: () => request<Gallery[]>("/api/galleries"),

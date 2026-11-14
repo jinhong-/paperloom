@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 
+import { api } from "@/api";
 import { useSessionStore } from "@/stores/session";
 
 const session = useSessionStore();
@@ -11,6 +12,23 @@ const username = ref("");
 const password = ref("");
 const error = ref<string | null>(null);
 const busy = ref(false);
+
+/**
+ * Whether the first account can still be made.
+ *
+ * Only the first account may be made this way. Anybody else is invited
+ * by the owner, so the link to the registration page is only offered
+ * while it is still possible.
+ */
+const registrationOpen = ref(false);
+
+onMounted(async () => {
+  try {
+    registrationOpen.value = (await api.registrationOpen()).open;
+  } catch {
+    /* If the server cannot be asked, the link is not offered. */
+  }
+});
 
 async function submit(): Promise<void> {
   error.value = null;
@@ -55,7 +73,7 @@ async function submit(): Promise<void> {
       </button>
     </form>
 
-    <p class="small muted">
+    <p v-if="registrationOpen" class="small muted">
       No account yet? <RouterLink to="/register">Create one</RouterLink>
     </p>
   </div>

@@ -19,6 +19,7 @@ onMounted(async () => {
       <nav v-if="session.signedIn()">
         <RouterLink to="/galleries">Galleries</RouterLink>
         <RouterLink to="/devices">Devices</RouterLink>
+        <RouterLink to="/people">People</RouterLink>
       </nav>
       <div class="who">
         <template v-if="session.signedIn()">

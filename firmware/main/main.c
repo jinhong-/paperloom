@@ -418,6 +418,10 @@ static int64_t run_cycle(wake_reason_t reason) {
     int64_t next_sync_ms = 0;
     bool have_sync = sync_next_wake(&now_ms, &next_sync_ms);
 
+    ESP_LOGI(TAG, "DIAG have_event=%d next_event=%lld have_sync=%d next_sync=%lld events=%u",
+             (int)have_event, (long long)next_event_ms, (int)have_sync, (long long)next_sync_ms,
+             (unsigned)schedule_event_count());
+
     int64_t wake_in;
     if (have_event && have_sync) {
         wake_in = (next_event_ms < next_sync_ms) ? next_event_ms : next_sync_ms;
