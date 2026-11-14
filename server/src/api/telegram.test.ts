@@ -632,6 +632,52 @@ test("a picture from somebody who has not been allowed is held", async (t) => {
   assert.equal(listed.pending[0]!.person.username, "person555");
 });
 
+test("a person who says hello shows up to be allowed", async (t) => {
+  const telegram = await startFakeTelegram(await testImage());
+  const server = await makeServer(telegram.url);
+
+  t.after(async () => {
+    await server.app.close();
+    await telegram.close();
+  });
+
+  const cookie = await signIn(server);
+  const galleryId = await createGallery(server, cookie);
+  const botId = await setUpBot(server, cookie, galleryId);
+
+  /* A message that is not a picture still shows the owner that somebody
+   * is there, so that they can be let in before they send a picture. */
+  telegram.push("123456:test-token", {
+    update_id: 1,
+    message: {
+      message_id: 10,
+      chat: { id: -1001234567890, type: "private" },
+      from: { id: 555, username: "alice_photos", first_name: "Alice" },
+      text: "hello",
+    },
+  });
+
+  await server.settled();
+
+  const people = server.db
+    .prepare("SELECT telegram_id, username, display_name FROM telegram_users")
+    .all() as Array<{ telegram_id: string; username: string; display_name: string }>;
+  assert.equal(people.length, 1, "the person must be recorded");
+  assert.equal(people[0]!.telegram_id, "555");
+  assert.equal(people[0]!.username, "alice_photos");
+
+  /* And the owner is shown them, waiting to be allowed. */
+  const listed = await server.app.inject({
+    method: "GET",
+    url: `/api/telegram/bots/${botId}/people`,
+    headers: { cookie },
+  });
+  assert.equal(listed.statusCode, 200, listed.body);
+  const shown = listed.json() as { pending: Array<{ person: { telegramId: string } }> };
+  assert.equal(shown.pending.length, 1, "the owner must be shown the person");
+  assert.equal(shown.pending[0]!.person.telegramId, "555");
+});
+
 test("a blocked person cannot file a picture", async (t) => {
   const telegram = await startFakeTelegram(await testImage());
   const server = await makeServer(telegram.url);

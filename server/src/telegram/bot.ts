@@ -95,21 +95,6 @@ export class TelegramBot {
     const message = update.message;
     if (!message) return;
 
-    /* A command is answered by the chat itself rather than by sending
-     * it anything. */
-    if (message.text?.startsWith("/")) {
-      await this.handleCommand(message);
-      return;
-    }
-
-    const picture = this.pictureFrom(message);
-    if (!picture) {
-      /* Only pictures are wanted here. Anything else is passed over
-       * quietly rather than answered, so that the chat does not fill up
-       * with notices. */
-      return;
-    }
-
     /* Who sent it. Telegram always says, and the id identifies the
      * person on every bot. */
     const sender = message.from;
@@ -121,7 +106,53 @@ export class TelegramBot {
     const displayName =
       [sender.first_name, sender.last_name].filter(Boolean).join(" ") || null;
 
+    /* The person is recorded as soon as they write, whatever they wrote.
+     *
+     * They are recorded even if they are not allowed yet, so that the
+     * owner can see somebody who has said hello and let them in before
+     * they send a picture. A person who is only noticed when they send a
+     * picture is noticed too late to be let in, and has to be turned
+     * away in the meantime.
+     */
     const status = this.options.access.statusFor(this.options.botId, telegramId);
+    if (status === "pending") {
+      this.options.access.record(
+        this.options.botId,
+        telegramId,
+        sender.username ?? null,
+        displayName,
+      );
+    }
+
+    /* A command is answered by the chat itself rather than by sending
+     * it anything. */
+    if (message.text?.startsWith("/")) {
+      await this.handleCommand(message);
+      return;
+    }
+
+    const picture = this.pictureFrom(message);
+    if (!picture) {
+      /* Only pictures are wanted here. Anything else is passed over
+       * quietly rather than answered, so that the chat does not fill up
+       * with notices.
+       *
+       * A person who is not allowed is told anyway, because otherwise
+       * they would send picture after picture and never learn why
+       * nothing was happening. */
+      if (status === "blocked") {
+        await this.options.client.sendMessage(
+          message.chat.id,
+          "You are not allowed to send pictures to this frame. Ask the owner to allow you.",
+        );
+      } else if (status === "pending") {
+        await this.options.client.sendMessage(
+          message.chat.id,
+          "Thanks. The owner of this frame has not allowed you yet, so your pictures will not be shown until they do.",
+        );
+      }
+      return;
+    }
 
     if (status === "blocked") {
       /* They are told, so that they know why nothing happened rather than
@@ -138,13 +169,6 @@ export class TelegramBot {
        * It is held, and the owner is shown somebody to allow or to block.
        * The person is told that it was received, so that they know it
        * arrived rather than being met with silence. */
-      this.options.access.record(
-        this.options.botId,
-        telegramId,
-        sender.username ?? null,
-        displayName,
-      );
-
       try {
         const bytes = await this.options.client.download(picture.fileId);
         await this.holdPicture(
