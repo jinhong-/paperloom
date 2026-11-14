@@ -36,6 +36,33 @@ const EVENT_GRACE_MS = 60 * 1000;
 const BATTERY_ASSET_LIMIT = 2;
 
 /**
+ * Mark a frame's pinned picture as shown, if the picture on its panel is
+ * that one.
+ *
+ * The pin is finished with when the frame says it has put that picture on
+ * the panel, which is the only proof that the picture was actually seen.
+ */
+function markPinShown(db: Db, deviceId: number, displayedAsset: string): void {
+  const pin = db
+    .prepare(
+      `SELECT pp.id FROM pinned_photos pp
+       JOIN photos p ON p.id = pp.photo_id
+       LEFT JOIN photo_assets pa ON pa.photo_id = pp.photo_id AND pa.rotation = (
+         SELECT rotation FROM devices WHERE id = ?
+       )
+       WHERE pp.device_id = ? AND pp.shown = 0
+         AND COALESCE(pa.content_hash, p.content_hash) = ?`,
+    )
+    .get(deviceId, deviceId, displayedAsset) as { id: number } | undefined;
+
+  if (!pin) return;
+
+  db.prepare(
+    "UPDATE pinned_photos SET shown = 1, updated_at = datetime('now') WHERE id = ?",
+  ).run(pin.id);
+}
+
+/**
  * The body a device sends when it checks in.
  */
 export interface SyncRequest {
@@ -244,6 +271,13 @@ export function registerDeviceApi(app: FastifyInstance, options: DeviceApiOption
       body.on_battery ?? null,
       auth.id,
     );
+
+    /* A picture pinned to this frame is finished with once the frame
+     * says it has put that picture on the panel. The frame's report of
+     * what it is showing is the only proof that the picture was seen. */
+    if (body.displayed_asset) {
+      markPinShown(db, auth.id, body.displayed_asset);
+    }
 
     const now = Date.now();
     const window = schedules.getForDevice(auth.id, now);

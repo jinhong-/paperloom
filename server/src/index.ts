@@ -19,6 +19,7 @@ import { registerManagementApi } from "./api/management.js";
 import { registerTelegramApi } from "./api/telegram.js";
 import { openDatabase, type Db } from "./db/index.js";
 import { GalleryPhotoService } from "./gallery/photos.js";
+import { PinnedPhotoService } from "./gallery/pinned.js";
 import { PhotoQueue, PhotoWorker } from "./queue/photos.js";
 import { ScheduleService } from "./schedule/service.js";
 import { TelegramBotManager } from "./telegram/manager.js";
@@ -85,9 +86,12 @@ export async function buildServer(config: ServerConfig): Promise<BuiltServer> {
   /* Pictures sent to the Telegram bot are rendered in the background, so
    * that the chat is answered straight away rather than after the
    * rendering. */
-  const photos = new GalleryPhotoService({ db, assets, schedules });
-  const queue = new PhotoQueue({ db, assets, photos });
-  const worker = new PhotoWorker({
+  /* A picture that arrives from a chat is pinned to the next check-in of
+   * each frame showing its gallery, so that it is shown on the next wake
+   * rather than waiting for its turn in the rotation. */
+  const pins = new PinnedPhotoService({ db, schedules });
+  const photos = new GalleryPhotoService({ db, assets, schedules, pins });
+  const queue = new PhotoQueue({ db, assets, photos });  const worker = new PhotoWorker({
     queue,
     assets,
     photos,

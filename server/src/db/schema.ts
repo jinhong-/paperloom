@@ -386,4 +386,37 @@ CREATE TABLE photo_jobs (
 CREATE INDEX idx_photo_jobs_status ON photo_jobs(status, id);
 `,
   },
+  {
+    id: "0009_pinned_photos",
+    sql: `
+-- A picture waiting to be shown at a particular moment.
+--
+-- A picture sent from Telegram is pinned to the next check-in of each
+-- frame that shows its gallery, so that it appears on the next wake
+-- rather than at some random point in the rotation.
+--
+-- The pin is one row per frame. It holds the moment the picture is to be
+-- shown and the picture itself.
+CREATE TABLE pinned_photos (
+  id            INTEGER PRIMARY KEY,
+  -- The frame the picture is pinned to.
+  device_id     INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  -- The picture to show.
+  photo_id      INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+  -- The moment the picture is to be shown, in epoch milliseconds.
+  at            INTEGER NOT NULL,
+  -- Whether the picture has been shown yet.
+  shown         INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  -- A frame holds at most one pinned picture at a time, and a picture is
+  -- pinned to one frame at a time.
+  UNIQUE (device_id),
+  UNIQUE (photo_id, device_id)
+);
+
+CREATE INDEX idx_pinned_photos_device ON pinned_photos(device_id);
+CREATE INDEX idx_pinned_photos_at ON pinned_photos(at);
+`,
+  },
 ];

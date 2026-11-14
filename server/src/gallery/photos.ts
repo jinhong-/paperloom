@@ -20,11 +20,19 @@ import { AssetStore } from "../assets/store.js";
 import type { Db } from "../db/index.js";
 import { PANEL_HEIGHT, PANEL_WIDTH, ROTATIONS } from "../panel.js";
 import type { ScheduleService } from "../schedule/service.js";
+import type { PinnedPhotoService } from "./pinned.js";
 
 export interface GalleryPhotoServiceOptions {
   readonly db: Db;
   readonly assets: AssetStore;
   readonly schedules: ScheduleService;
+  /**
+   * The pins, when photos are to be pinned to a frame's next check-in.
+   *
+   * It is optional so that the service can be built without it, which is
+   * what the tests that do not care about pinning do.
+   */
+  readonly pins?: PinnedPhotoService;
 }
 
 /** The result of adding a photo to a gallery. */
@@ -39,6 +47,13 @@ export interface AddedPhoto {
   readonly contentHash: string;
   /** The size of the upright rendering, in bytes. */
   readonly byteSize: number;
+  /**
+   * The frames the photo was pinned to, if it was pinned.
+   *
+   * A pinned photo is shown at the next check-in of each frame showing
+   * the gallery, rather than waiting for its turn in the rotation.
+   */
+  readonly pinnedTo?: readonly { readonly deviceId: number; readonly at: number }[];
 }
 
 export class GalleryPhotoService {
@@ -57,11 +72,16 @@ export class GalleryPhotoService {
    * The rendering happens here rather than on the device so that the
    * device never has to do image work, and so that the asset hash is
    * known before the device asks for it.
+   *
+   * @param pin when true, the photo is pinned to the next check-in of
+   *            every frame showing the gallery, so that it is shown on
+   *            the next wake rather than waiting for its turn.
    */
   async addPhoto(
     galleryId: number,
     filename: string | undefined,
     source: Buffer,
+    options: { readonly pin?: boolean } = {},
   ): Promise<AddedPhoto> {
     const { db, assets } = this.options;
 
@@ -121,12 +141,28 @@ export class GalleryPhotoService {
      * the devices that show it are rebuilt. */
     this.invalidateGallery(galleryId);
 
+    /* The photo is pinned to the next check-in of each frame showing the
+     * gallery, so that it is shown on the next wake rather than at some
+     * arbitrary point in the rotation. */
+    let pinnedTo: AddedPhoto["pinnedTo"];
+    if (options.pin && this.options.pins) {
+      const pins = this.options.pins.pinForGallery(galleryId, photoId, Date.now());
+      pinnedTo = pins.map((pin) => ({ deviceId: pin.device_id, at: pin.at }));
+
+      /* The schedules were thrown away above, and the pin changes what
+       * they should contain, so they are thrown away again. */
+      if (pins.length > 0) {
+        this.invalidateGallery(galleryId);
+      }
+    }
+
     return {
       id: photoId,
       filename: name,
       sourceHash,
       contentHash: upright.hash,
       byteSize: upright.size,
+      pinnedTo,
     };
   }
 

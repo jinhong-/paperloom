@@ -264,10 +264,14 @@ export class PhotoWorker {
             throw new Error("the original is no longer available");
           }
 
+          /* A picture that came from a chat is pinned to the next check-in of
+           * the frames showing its gallery, so that it is shown on the next
+           * wake rather than waiting for its turn in the rotation. */
           const added = await this.options.photos.addPhoto(
             claimed.gallery_id,
             claimed.filename,
             source,
+            { pin: claimed.origin === "telegram" },
           );
 
           this.options.queue.complete(claimed.id, added.id);

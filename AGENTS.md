@@ -70,11 +70,18 @@ readable at a glance. These are the ones in use:
 | `telegram` | The Telegram bot, its queue and its bindings |
 | `gallery` | Galleries, photos and their rendering |
 
-A change that spans two parts names both, separated by a comma:
+A change that spans two parts picks the scope of the part that matters
+most, and says the rest in the description:
 
 ```text
-feat(server, web): show the frame's battery level
+feat(web): show the frame's battery level in the server
 ```
+
+A pull request title is checked against the Conventional Commits format by
+`.github/scripts/check-conventional-title.mjs`, and it accepts a single
+scope of letters, digits, dots, dashes and underscores. A title with a
+comma in the scope, such as `feat(server, web): ...`, is rejected, so
+commit titles may name two scopes but a pull request title may not.
 
 Leave the scope off when a change is genuinely cross-cutting, rather than
 inventing a scope for it.
