@@ -253,14 +253,14 @@ export interface MaterializeInput {
   /** The most recently displayed photo id, to avoid an immediate repeat. */
   readonly lastPhotoId?: number;
   /**
-   * A picture pinned to a particular moment.
+   * The pictures pinned to particular moments.
    *
-   * A picture that arrived from a chat is pinned to the frame's next
-   * check-in, so that it is shown on the next wake rather than waiting
-   * for its turn in the rotation. It takes the place of whatever would
-   * have been shown at that moment.
+   * A picture that arrived from a chat is pinned to a moment of its own,
+   * so that it is shown on the next wake rather than waiting for its turn
+   * in the rotation. The pictures are a queue: each one is shown after the
+   * one before it.
    */
-  readonly pinned?: { readonly at: number; readonly contentHash: string };
+  readonly pinned?: ReadonlyArray<{ readonly at: number; readonly contentHash: string }>;
 }
 
 /**
@@ -318,27 +318,24 @@ export function materializeSchedule(input: MaterializeInput): DisplayEvent[] {
    * It does not take the place of a slot in the rotation: the pin is at
    * a moment of its own, and the frame is asleep until then. Taking a
    * slot instead would push the picture as far as a whole interval
-   * later, which is the very delay the pin exists to avoid. */
-  const pinned = input.pinned;
-
-  /* The pin is an event of its own, and it may fall between two ordinary
-   * slots, so it is placed at its own moment.
+   * later, which is the very delay the pin exists to avoid.
    *
-   * A plan that already has an event at that moment keeps it: the pin was
-   * made for that moment, and the event already there is the one that was
-   * planned for it. Adding the pin as well would leave the frame changing
-   * twice at the same instant. */
-  const pinnedAt = pinned?.at;
-  const pinnedAlreadyThere =
-    pinnedAt !== undefined && existingByAt.has(pinnedAt);
+   * The pins are a queue, and each one is placed at its own moment. A pin
+   * that falls outside the window is left out: the frame will be given it
+   * when the window reaches it. */
+  const pinned = input.pinned ?? [];
 
-  if (
-    pinned !== undefined &&
-    !pinnedAlreadyThere &&
-    pinned.at >= windowStart &&
-    pinned.at < windowEnd
-  ) {
-    events.push({ at: pinned.at, asset: pinned.contentHash });
+  for (const pin of pinned) {
+    /* A plan that already has an event at that moment keeps it: the pin
+     * was made for that moment, and the event already there is the one
+     * that was planned for it. Adding the pin as well would leave the
+     * frame changing twice at the same instant. */
+    if (existingByAt.has(pin.at)) {
+      continue;
+    }
+    if (pin.at >= windowStart && pin.at < windowEnd) {
+      events.push({ at: pin.at, asset: pin.contentHash });
+    }
   }
 
   // Guard against a pathological policy producing an unbounded loop.

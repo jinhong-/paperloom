@@ -581,24 +581,27 @@ export class ScheduleService {
    * every other picture, so that a turned frame shows the pinned picture
    * the right way up.
    */
-  private pinnedFor(deviceId: number): { at: number; contentHash: string } | undefined {
+  private pinnedFor(deviceId: number): Array<{ at: number; contentHash: string }> {
     const rotation = this.rotationFor(deviceId);
 
-    const row = this.db
+    const rows = this.db
       .prepare(
         `SELECT pp.at, COALESCE(pa.content_hash, p.content_hash) AS content_hash
          FROM pinned_photos pp
          JOIN photos p ON p.id = pp.photo_id
          LEFT JOIN photo_assets pa ON pa.photo_id = pp.photo_id AND pa.rotation = ?
          WHERE pp.device_id = ? AND pp.shown = 0
-         LIMIT 1`,
+         ORDER BY pp.at`,
       )
-      .get(rotation, deviceId) as
-      | { at: number; content_hash: string | null }
-      | undefined;
+      .all(rotation, deviceId) as Array<{ at: number; content_hash: string | null }>;
 
-    if (!row || !row.content_hash) return undefined;
-    return { at: row.at, contentHash: row.content_hash };
+    const pins: Array<{ at: number; contentHash: string }> = [];
+    for (const row of rows) {
+      if (row.content_hash) {
+        pins.push({ at: row.at, contentHash: row.content_hash });
+      }
+    }
+    return pins;
   }
 
   /**

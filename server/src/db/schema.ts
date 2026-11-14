@@ -524,4 +524,42 @@ CREATE INDEX idx_held_photos_telegram ON held_photos(telegram_id);
 DROP TABLE IF EXISTS telegram_chats;
 `,
   },
+  {
+    id: "0013_pinned_queue",
+    sql: `
+-- The pins become a queue.
+--
+-- A frame held at most one pinned picture, so a second picture sent
+-- replaced the first and only the last was ever shown. The pictures you
+-- send are meant to be seen, in the order you sent them, so each one now
+-- takes the place after the last in the queue.
+--
+-- The row that is first in the queue is the one the frame shows next.
+CREATE TABLE pinned_photos_new (
+  id            INTEGER PRIMARY KEY,
+  -- The frame the picture is pinned to.
+  device_id     INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  -- The picture to show.
+  photo_id      INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+  -- The moment the picture is to be shown, in epoch milliseconds.
+  at            INTEGER NOT NULL,
+  -- Whether the picture has been shown yet.
+  shown         INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  -- A picture is pinned to one frame at a time.
+  UNIQUE (photo_id, device_id)
+);
+
+INSERT INTO pinned_photos_new (id, device_id, photo_id, at, shown, created_at, updated_at)
+  SELECT id, device_id, photo_id, at, shown, created_at, updated_at
+  FROM pinned_photos;
+
+DROP TABLE pinned_photos;
+ALTER TABLE pinned_photos_new RENAME TO pinned_photos;
+
+CREATE INDEX idx_pinned_photos_device ON pinned_photos(device_id);
+CREATE INDEX idx_pinned_photos_at ON pinned_photos(at);
+`,
+  },
 ];
