@@ -353,7 +353,18 @@ export function materializeSchedule(input: MaterializeInput): DisplayEvent[] {
   // Guard against a pathological policy producing an unbounded loop.
   const maxEvents = 10_000;
 
-  while (cursor < windowEnd && events.length < maxEvents) {
+  /* The loop also counts its turns, not only its events.
+   *
+   * A gallery that is still for a time produces no events, so the event
+   * count alone does not bound the loop: the cursor advances a step at a
+   * time, and a gallery with a very short interval would need a great
+   * many of them to cross the window. Counting the turns puts a bound on
+   * the work done, whatever the policy says. */
+  const maxTurns = 100_000;
+  let turns = 0;
+
+  while (cursor < windowEnd && events.length < maxEvents && turns < maxTurns) {
+    turns += 1;
     const gallery = galleries[rng.below(galleries.length)]!;
 
     /* Choose the interval for the *next* display, so the first event lands

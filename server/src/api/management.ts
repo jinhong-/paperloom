@@ -74,6 +74,37 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
     photos.invalidateGallery(galleryId, Date.now());
   }
 
+  /**
+   * Whether a rule about when a gallery changes makes sense.
+   *
+   * The days are a bit mask of the seven days of the week, and the times
+   * are minutes from midnight. A rule with no interval at all is the
+   * gallery being still for that time, which is allowed; a rule with one
+   * interval has to have a sensible one.
+   */
+  function validRule(body: {
+    days?: number;
+    start_minute?: number;
+    end_minute?: number;
+    min_interval?: number | null;
+    max_interval?: number | null;
+  }): boolean {
+    if (body.days !== undefined && (!Number.isInteger(body.days) || body.days < 0 || body.days > 127)) {
+      return false;
+    }
+    for (const key of ["start_minute", "end_minute"] as const) {
+      const value = body[key];
+      if (value === undefined) continue;
+      if (!Number.isInteger(value) || value < 0 || value > 1440) return false;
+    }
+    for (const key of ["min_interval", "max_interval"] as const) {
+      const value = body[key];
+      if (value === undefined || value === null) continue;
+      if (!Number.isFinite(value) || value < 60 || value > 604_800) return false;
+    }
+    return true;
+  }
+
   // ---------------------------------------------------------------------
   // Sessions
   // ---------------------------------------------------------------------
@@ -389,6 +420,18 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       return;
     }
 
+    /* The intervals have to be sensible: see the update route. */
+    for (const key of ["min_interval", "max_interval"] as const) {
+      const value = body[key];
+      if (value === undefined) continue;
+      if (!Number.isFinite(value) || value < 60 || value > 604_800) {
+        await reply.code(400).send({
+          error: `${key} must be between 60 seconds and a week`,
+        });
+        return;
+      }
+    }
+
     const result = db
       .prepare(
         `INSERT INTO galleries (user_id, name, rotation_mode, min_interval, max_interval)
@@ -433,6 +476,23 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
     if (body.tone_preset !== undefined && !PRESETS[body.tone_preset]) {
       await reply.code(400).send({ error: "unknown way of preparing the pictures" });
       return;
+    }
+
+    /* The intervals have to be sensible.
+     *
+     * A gallery that changes every second would fill a plan with tens of
+     * thousands of events, and the plan is sent to a frame over the
+     * network. A minute is the shortest gap that makes sense, and a week
+     * is longer than any gap anybody wants. */
+    for (const key of ["min_interval", "max_interval"] as const) {
+      const value = body[key];
+      if (value === undefined) continue;
+      if (!Number.isFinite(value) || value < 60 || value > 604_800) {
+        await reply.code(400).send({
+          error: `${key} must be between 60 seconds and a week`,
+        });
+        return;
+      }
     }
 
     const fields: string[] = [];
@@ -523,6 +583,11 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       priority?: number;
     };
 
+    if (!validRule(body)) {
+      await reply.code(400).send({ error: "the rule does not make sense" });
+      return;
+    }
+
     const result = db
       .prepare(
         `INSERT INTO gallery_schedule_rules
@@ -568,6 +633,11 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       max_interval?: number | null;
       priority?: number;
     };
+
+    if (!validRule(body)) {
+      await reply.code(400).send({ error: "the rule does not make sense" });
+      return;
+    }
 
     const fields: string[] = [];
     const values: unknown[] = [];
