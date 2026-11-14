@@ -6,7 +6,6 @@
 # provides the Node.js runtime and package manager, while the native
 # dependencies are installed for the same target architecture.
 ARG BUILDPLATFORM
-ARG TARGETPLATFORM
 FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS builder
 
 RUN apt-get update \
@@ -24,7 +23,7 @@ COPY server/web/ ./web/
 COPY server/tsconfig.json ./
 RUN npm run build && npm run build:web
 
-FROM --platform=$TARGETPLATFORM node:22-bookworm-slim AS runtime
+FROM node:22-bookworm-slim AS runtime
 
 ENV NODE_ENV=production \
     PAPERLOOM_HOST=0.0.0.0 \

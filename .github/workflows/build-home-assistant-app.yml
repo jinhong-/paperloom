@@ -53,7 +53,10 @@ jobs:
           IMAGE_OWNER: ${{ github.repository_owner }}
           ARCH: ${{ matrix.arch }}
         run: |
-          owner="${IMAGE_OWNER,,}"
+          # GHCR package paths use the owner's account name exactly as it
+          # appears in GitHub. The trailing hyphen is part of the owner
+          # name and must not be treated as a path separator.
+          owner="${IMAGE_OWNER}"
           echo "version=ghcr.io/${owner}/paperloom-${ARCH}:0.1.0" >> "$GITHUB_OUTPUT"
           echo "run=ghcr.io/${owner}/paperloom-${ARCH}:run-${GITHUB_RUN_ID}" >> "$GITHUB_OUTPUT"
 
