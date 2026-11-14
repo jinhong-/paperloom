@@ -374,6 +374,60 @@ bool sync_needs_enrol(void) {
     return !s_claimed;
 }
 
+/**
+ * Where the request for a forced sync is kept.
+ *
+ * It lives in flash because the restart that follows a button press wipes
+ * the memory, and the request has to survive that.
+ */
+#define NVS_KEY_FORCE_SYNC "force_sync"
+
+/**
+ * Ask for a sync on the next wake, whatever the schedule says.
+ */
+void sync_request_forced(void) {
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) != ESP_OK) {
+        return;
+    }
+    nvs_set_u8(nvs, NVS_KEY_FORCE_SYNC, 1);
+    nvs_commit(nvs);
+    nvs_close(nvs);
+    ESP_LOGI(TAG, "A sync has been asked for");
+}
+
+/**
+ * Whether a sync has been asked for.
+ *
+ * The request is only forgotten by sync_clear_forced_request, so that it
+ * is carried out even if the frame cannot reach the server at first.
+ */
+bool sync_forced_requested(void) {
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
+        return false;
+    }
+
+    uint8_t forced = 0;
+    esp_err_t err = nvs_get_u8(nvs, NVS_KEY_FORCE_SYNC, &forced);
+    nvs_close(nvs);
+
+    return err == ESP_OK && forced != 0;
+}
+
+/**
+ * Forget the request for a forced sync.
+ */
+void sync_clear_forced_request(void) {
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) != ESP_OK) {
+        return;
+    }
+    nvs_set_u8(nvs, NVS_KEY_FORCE_SYNC, 0);
+    nvs_commit(nvs);
+    nvs_close(nvs);
+}
+
 esp_err_t sync_init(void) {
     nvs_read_string(NVS_KEY_SERVER_URL, s_server_url, sizeof(s_server_url));
     nvs_read_string(NVS_KEY_DEVICE_ID, s_device_id, sizeof(s_device_id));

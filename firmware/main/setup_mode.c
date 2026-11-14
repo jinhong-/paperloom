@@ -183,6 +183,12 @@ void setup_mode_run(void) {
         .setup_url = setup_url,
     };
 
+    /* The passphrase is shown on the panel as well, so putting it in the
+     * log does not tell anyone anything they could not already read off
+     * the screen. It makes the setup possible without a camera to hand. */
+    ESP_LOGI(TAG, "Join the network \"%s\" with the passphrase \"%s\", then open %s",
+             s_ap_ssid, s_ap_password, setup_url);
+
     ESP_ERROR_CHECK(display_task_show_setup_screen(&info));
 
     /* Serve the setup page. */

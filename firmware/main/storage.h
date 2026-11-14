@@ -52,6 +52,13 @@ size_t storage_asset_bytes(void);
 esp_err_t storage_remove_asset(const char *hash);
 
 /**
+ * Remove every cached asset, the schedule and any half-downloaded file.
+ *
+ * @return The number of files that were removed.
+ */
+size_t storage_wipe(void);
+
+/**
  * Mark an asset as recently used.
  */
 esp_err_t storage_touch_asset(const char *hash);

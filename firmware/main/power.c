@@ -19,8 +19,10 @@
 #include <esp_err.h>
 #include <esp_log.h>
 #include <driver/gpio.h>
+#include <driver/rtc_io.h>
 #include <esp_timer.h>
 #include <esp_pm.h>
+#include <soc/rtc.h>
 
 #include "app_config.h"
 #include "board.h"
@@ -77,28 +79,54 @@ esp_err_t power_prepare_sleep(int64_t delay_ms) {
  *                 button press.
  */
 void power_enter_deep_sleep(int64_t delay_ms) {
-    /* The buttons must be able to wake the device, so they have to be
-     * configured as wake sources with the pull-up enabled.
+    /* The buttons must be able to wake the device.
      *
-     * The buttons are active-high with an internal pull-up, so a press
-     * pulls the line high and the idle state is low. The wake source
-     * therefore has to be ANY_HIGH.
+     * The buttons are active-high: a press pulls the line up to VCC and
+     * the line rests low. The measurement on the board confirms it: with
+     * nothing pressed, the three lines all read low, and pressing a
+     * button drives its line high.
      *
-     * With ANY_LOW the frame woke after a moment whatever it was asked to
-     * sleep for, because the idle lines looked like a press.
+     * So the wake level has to be high. With a low wake level the source
+     * is satisfied all the time, and the frame wakes at once and never
+     * sleeps properly.
      *
-     * This is set up before the timer, because setting a wake source
-     * replaces the sleep configuration. */
+     * The pull-up has to be left off. The board already holds the lines
+     * down, and an internal pull-up would raise them, which would make
+     * the high wake level satisfied all the time and have the same
+     * effect.
+     *
+     * The RTC's own pull-down is used rather than the digital
+     * peripheral's, because the digital peripherals are powered down
+     * during a deep sleep and their pull-downs go with them.
+     */
     gpio_config_t wake_conf = {
         .mode = GPIO_MODE_INPUT,
         .pin_bit_mask = (1ULL << BUTTON_WAKEUP) | (1ULL << BUTTON_NEXT) | (1ULL << BUTTON_RESET),
-        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_ENABLE,
     };
     gpio_config(&wake_conf);
+
+    rtc_gpio_pullup_dis(BUTTON_WAKEUP);
+    rtc_gpio_pulldown_en(BUTTON_WAKEUP);
+
+    rtc_gpio_pullup_dis(BUTTON_NEXT);
+    rtc_gpio_pulldown_en(BUTTON_NEXT);
+
+    rtc_gpio_pullup_dis(BUTTON_RESET);
+    rtc_gpio_pulldown_en(BUTTON_RESET);
 
     uint64_t button_mask = (1ULL << BUTTON_WAKEUP) | (1ULL << BUTTON_NEXT) |
                            (1ULL << BUTTON_RESET);
     esp_sleep_enable_ext1_wakeup_io(button_mask, ESP_EXT1_WAKEUP_ANY_HIGH);
+
+    /* The lines have to rest low for the wake source to stay quiet. If
+     * they read high here, something is holding them up and the frame
+     * would wake at once. */
+    ESP_LOGI(TAG, "The button lines rest at: wake=%d next=%d reset=%d",
+             gpio_get_level(BUTTON_WAKEUP),
+             gpio_get_level(BUTTON_NEXT),
+             gpio_get_level(BUTTON_RESET));
 
     if (delay_ms > 0) {
         /* Cap the timer at the maximum the RTC can represent, so that a

@@ -202,6 +202,21 @@ static void storage_flash_name(const char *hash, const char *prefix, char *out, 
 }
 
 /**
+ * Whether a name in the flash mount point belongs to the cache.
+ *
+ * The flash filesystem has no directories, so everything the cache owns
+ * sits in the mount point beside anything else that might be there. The
+ * cache's own files are the assets, which are named with an "a-" prefix,
+ * the downloads that have not finished, which are named with a "t-", and
+ * the schedule.
+ */
+static bool storage_flash_name_is_cached(const char *name) {
+    return strncmp(name, "a-", 2) == 0 ||
+           strncmp(name, "t-", 2) == 0 ||
+           strcmp(name, "schedule.json") == 0;
+}
+
+/**
  * The path of an asset in the cache.
  *
  * Assets are stored flat, named by their content hash.
@@ -306,6 +321,67 @@ size_t storage_asset_bytes(void) {
     size_t bytes = 0;
     storage_asset_totals(NULL, &bytes);
     return bytes;
+}
+
+/**
+ * Remove every cached asset, the schedule, and any half-downloaded file.
+ *
+ * This is used by the factory reset, so that the frame really is blank
+ * afterwards and not merely without its settings.
+ *
+ * @return The number of files that were removed.
+ */
+size_t storage_wipe(void) {
+    if (!s_mounted) {
+        return 0;
+    }
+
+    size_t removed = 0;
+
+    /* The two layouts are different.
+     *
+     * The flash fallback has no directories, so the assets sit directly in
+     * the mount point, named with a prefix that keeps them apart from the
+     * schedule. The card has a real directory for the assets. */
+    const char *dir_path = s_using_spiffs ? s_root : s_asset_dir;
+
+    DIR *dir = opendir(dir_path);
+    if (dir != NULL) {
+        struct dirent *entry = NULL;
+        while ((entry = readdir(dir)) != NULL) {
+            const char *name = entry->d_name;
+            if (name[0] == '.' || name[0] == '\0') {
+                continue;
+            }
+
+            /* In the flash fallback only the files the cache owns are
+             * removed. Anything else in the mount point is left alone. */
+            if (s_using_spiffs && !storage_flash_name_is_cached(name)) {
+                continue;
+            }
+
+            char path[320];
+            snprintf(path, sizeof(path), "%s/%s", dir_path, name);
+            if (unlink(path) == 0) {
+                removed++;
+            }
+        }
+        closedir(dir);
+    }
+
+    /* The schedule and its temporary file are removed in both cases. */
+    if (unlink(s_schedule_path) == 0) {
+        removed++;
+    }
+
+    char temp_path[320];
+    snprintf(temp_path, sizeof(temp_path), "%s.tmp", s_schedule_path);
+    if (unlink(temp_path) == 0) {
+        removed++;
+    }
+
+    ESP_LOGW(TAG, "Removed %u files from the cache", (unsigned)removed);
+    return removed;
 }
 
 /**

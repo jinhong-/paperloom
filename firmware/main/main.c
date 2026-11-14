@@ -69,17 +69,24 @@ typedef enum {
 /**
  * Work out why we woke.
  *
- * A deep-sleep wake from the timer is distinguished from a button wake by
- * looking at which GPIO woke us.
+ * The chip says which source woke it, which is the only reliable way to
+ * tell a button from the timer. Looking at the button lines instead does
+ * not work: a quick press is over by the time the frame wakes, so the
+ * lines read as if nothing had been pressed.
  */
 static wake_reason_t detect_wake_reason(void) {
-    if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_UNDEFINED) {
+    esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+
+    if (cause == ESP_SLEEP_WAKEUP_UNDEFINED) {
         return WAKE_POWERON;
     }
-    if (board_any_button_pressed()) {
+    if (cause == ESP_SLEEP_WAKEUP_EXT1) {
         return WAKE_BUTTON;
     }
-    return WAKE_TIMER;
+    if (cause == ESP_SLEEP_WAKEUP_TIMER) {
+        return WAKE_TIMER;
+    }
+    return WAKE_OTHER;
 }
 
 /**
@@ -92,63 +99,71 @@ static wake_reason_t detect_wake_reason(void) {
 #define HARD_RESET_HOLD_MS 5000
 
 /**
- * Wait for the reset button to be released, and say how long it was held.
+ * How much of the hold is lost while the frame wakes.
  *
- * A press that is released quickly is a soft reset. A press that is held
- * for long enough is a hard reset, which puts the frame back into setup
- * mode.
+ * The frame wakes as soon as the button goes down, but waking takes a
+ * moment: the chip comes out of deep sleep, boots, and starts the
+ * application before it starts counting. The count therefore begins a
+ * little after the press did, and a press of the full length is measured
+ * as being slightly shorter than it was.
  *
- * @param held_ms  Set to how long the button was held, in milliseconds.
- * @param released Set to true if the button was released.
- *
- * @return true if the button was held long enough for a hard reset.
+ * The margin is subtracted from the length that has to be measured, so
+ * that a press of the full length still counts as a long one.
  */
-static bool wait_for_reset_button(int64_t *held_ms, bool *released) {
-    int64_t start_ms = 0;
-    time_now(&start_ms);
+#define HARD_RESET_WAKE_LOSS_MS 1000
 
-    *released = false;
-    *held_ms = 0;
+/**
+ * How long the reset button was held for.
+ *
+ * The time is measured by counting, rather than by reading the clock,
+ * because the clock may not be anchored: the clock is there to tell the
+ * frame what time it is, and it cannot be relied on to say how long
+ * something has been held.
+ *
+ * @return The time in milliseconds.
+ */
+static int64_t reset_hold_while_pressed(void) {
+    /* The length that has to be measured for the press to count as a long
+     * one. It is never less than a second, so that a very long wake-up
+     * cannot make every press count as a long one. */
+    const int64_t needed_ms =
+        HARD_RESET_HOLD_MS > HARD_RESET_WAKE_LOSS_MS
+            ? HARD_RESET_HOLD_MS - HARD_RESET_WAKE_LOSS_MS
+            : 1000;
 
-    /* Wait for the button to go down first, in case it was already held
-     * when the frame woke. */
-    while (!board_button_pressed(BUTTON_RESET)) {
-        if (!board_any_button_pressed()) {
-            /* The button was tapped and released between sleeps. */
-            return false;
-        }
-        vTaskDelay(pdMS_TO_TICKS(50));
-    }
-
+    int held_ms = 0;
     while (board_button_pressed(BUTTON_RESET)) {
-        int64_t now_ms = 0;
-        time_now(&now_ms);
-        *held_ms = now_ms - start_ms;
-
-        if (*held_ms >= HARD_RESET_HOLD_MS) {
-            /* Long enough. Stop waiting for the release, so that the
+        if (held_ms >= needed_ms) {
+            /* It has been held long enough. Stop waiting, so that the
              * frame does not sit here for as long as the button is
              * held. */
-            return true;
+            return HARD_RESET_HOLD_MS;
         }
-
-        vTaskDelay(pdMS_TO_TICKS(50));
+        vTaskDelay(pdMS_TO_TICKS(20));
+        held_ms += 20;
     }
-
-    *released = true;
-    return false;
+    return held_ms;
 }
 
 /**
  * Put the frame back into setup mode.
  *
- * Everything the frame knows is in one namespace in flash: the Wi-Fi
- * details, the server, and the key it signs its requests with. Erasing
- * it makes the frame as good as new, and it comes up in setup mode
+ * Everything the frame knows is erased: the Wi-Fi details, the server, the
+ * key it signs its requests with, and the cached photos and schedule. That
+ * way the frame really is as good as new, and it comes up in setup mode
  * because it has no server to talk to.
  */
 static void factory_reset(void) {
     ESP_LOGW(TAG, "The reset button was held; erasing the settings and starting again");
+
+    /* The cache has to be mounted before it can be emptied, because the
+     * photos live on the card if there is one and in the flash partition
+     * if there is not. */
+    if (storage_init() == ESP_OK) {
+        storage_wipe();
+    } else {
+        ESP_LOGW(TAG, "Could not open the cache; leaving the photos where they are");
+    }
 
     nvs_handle_t nvs;
     if (nvs_open("paperloom", NVS_READWRITE, &nvs) == ESP_OK) {
@@ -190,18 +205,30 @@ static int64_t run_cycle(wake_reason_t reason) {
      * A short press restarts the frame, which makes it check in with the
      * server straight away. A long press puts it back into setup mode.
      *
-     * The press is only looked for when the frame woke because of a
-     * button. A frame that woke on a timer should not stop for it. */
-    if (reason == WAKE_BUTTON && board_button_pressed(BUTTON_RESET)) {
-        int64_t held_ms = 0;
-        bool released = false;
+     * The chip does not say which button woke it, only that one of them
+     * did, so the frame cannot tell a press of the reset button from a
+     * press of any other. It therefore watches the reset button itself:
+     * if the button is down, or it has just been let go, the press was
+     * for the reset button.
+     */
+    if (reason == WAKE_BUTTON) {
+        int64_t held_ms = reset_hold_while_pressed();
+        ESP_LOGI(TAG, "The reset button was held for %lld ms", (long long)held_ms);
 
-        if (wait_for_reset_button(&held_ms, &released)) {
+        if (held_ms >= HARD_RESET_HOLD_MS) {
+            ESP_LOGW(TAG, "The reset button was held for a long time; wiping the frame");
             factory_reset();
-        }
-
-        if (released) {
+        } else {
+            /* The button was pressed and released. Whether it was pressed
+             * just now or while the frame was asleep, it was a short
+             * press.
+             *
+             * The restart wipes the memory, so the request for a sync is
+             * put in flash first: the person who pressed the button wants
+             * the frame to pick up any change to its schedule at once,
+             * rather than at the next check-in. */
             ESP_LOGI(TAG, "The reset button was pressed; restarting");
+            sync_request_forced();
             esp_restart();
         }
     }
@@ -261,10 +288,16 @@ static int64_t run_cycle(wake_reason_t reason) {
         sync_due = true;
     }
 
-    /* A button press always forces a sync: the user asked for it. */
-    if (reason == WAKE_BUTTON) {
+    /* A button press always forces a sync: the user asked for it.
+     *
+     * The request is kept in flash rather than in memory, because the
+     * button press restarts the frame, and a restart wipes the memory.
+     * The request is only forgotten once the sync has actually happened,
+     * so that it is still carried out if the frame cannot reach the
+     * server at first. */
+    if (sync_forced_requested()) {
         sync_due = true;
-        ESP_LOGI(TAG, "Button wake: forcing a sync");
+        ESP_LOGI(TAG, "A sync was asked for; forcing one");
     }
 
     /* A device whose clock has been lost, or that has been unpowered, has
@@ -342,6 +375,10 @@ static int64_t run_cycle(wake_reason_t reason) {
             }
 
             if (sync_perform(&now_ms) == SYNC_OK) {
+                /* The sync has happened, so the request for one is
+                 * fulfilled and can be forgotten. */
+                sync_clear_forced_request();
+
                 /* The server may have corrected the clock, so the due
                  * check is redone against the current time rather than
                  * the one from the top of the cycle.
@@ -369,6 +406,7 @@ static int64_t run_cycle(wake_reason_t reason) {
                     if (sync_fetch_server_time()) {
                         if (sync_perform(&now_ms) == SYNC_OK) {
                             ESP_LOGI(TAG, "The retry worked");
+                            sync_clear_forced_request();
                         } else {
                             ESP_LOGW(TAG, "The retry did not work either");
                         }

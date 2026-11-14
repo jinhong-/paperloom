@@ -42,10 +42,15 @@ static int s_retry_count = 0;
  * Bring up the board's peripherals.
  */
 void board_init(void) {
+    /* The buttons are active-high: a press drives the line up, and the
+     * line rests low. The board holds the lines down on its own, so no
+     * pull-up is wanted here. An internal pull-up would hold the lines
+     * high, which would read as all three buttons being pressed. */
     gpio_config_t button_conf = {
         .mode = GPIO_MODE_INPUT,
         .pin_bit_mask = (1ULL << BUTTON_WAKEUP) | (1ULL << BUTTON_NEXT) | (1ULL << BUTTON_RESET),
-        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_ENABLE,
     };
     gpio_config(&button_conf);
 

@@ -121,6 +121,31 @@ bool sync_clock_was_rejected(void);
 bool sync_needs_enrol(void);
 
 /**
+ * Ask for a sync on the next wake, whatever the schedule says.
+ *
+ * This is used by the reset button: a short press restarts the frame, and
+ * the person who pressed it wants the frame to pick up any change to its
+ * schedule straight away rather than at the next check-in.
+ *
+ * The request is kept in flash, because the restart that follows wipes
+ * the memory. It is forgotten once the sync has actually happened.
+ */
+void sync_request_forced(void);
+
+/**
+ * Whether a sync has been asked for.
+ *
+ * The request is only forgotten by sync_clear_forced_request, so that it
+ * is carried out even if the frame cannot reach the server at first.
+ */
+bool sync_forced_requested(void);
+
+/**
+ * Forget the request for a forced sync.
+ */
+void sync_clear_forced_request(void);
+
+/**
  * The claim URL from the last enrolment.
  */
 const char *sync_claim_url(void);
