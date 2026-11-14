@@ -484,11 +484,6 @@ static int64_t run_cycle(wake_reason_t reason) {
         wake_in = -1;
     }
 
-    ESP_LOGI(TAG, "DIAG now=%lld next_event=%lld next_sync=%lld",
-             (long long)now_ms,
-             (long long)(have_event ? next_event_ms : -1),
-             (long long)(have_sync ? next_sync_ms : -1));
-
     /* The delay is how long until the frame wakes. A negative number means
      * the moment has already passed, which happens when the frame's clock
      * is behind the server's and the server's time for the next check-in

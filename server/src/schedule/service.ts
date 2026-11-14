@@ -258,8 +258,12 @@ export class ScheduleService {
 
     /* The plan starts where it started before, so that the times in it do
      * not move. A frame that has no plan yet starts now, so that it has a
-     * picture to show at once. */
-    const windowStart = current ? current.windowStart : now;
+     * picture to show at once.
+     *
+     * The start is on the minute, because the times in the plan are. The
+     * first event is at the start, so it is at the minute the plan began
+     * rather than at some point during it. */
+    const windowStart = current ? current.windowStart : Math.floor(now / 60_000) * 60_000;
 
     /* How far the plan has to reach.
      *
@@ -291,7 +295,18 @@ export class ScheduleService {
       existing: current?.items,
       candidates,
       galleries,
-      policy: { ...policy, timezone: device.timezone || policy.timezone },
+      policy: {
+        ...policy,
+        timezone: device.timezone || policy.timezone,
+        /* The photos are not planned closer together than the frame checks
+         * in, because the frame can only show a photo when it wakes.
+         *
+         * The interval is the one that applies at the start of the plan,
+         * and not the one that applies now, so that the plan does not
+         * change when the rules around it change. A plan that changed its
+         * own times would no longer be the plan the frame was given. */
+        syncIntervalNow: this.intervalAt(deviceId, windowStart) ?? policy.syncInterval,
+      },
       currentAsset: device.displayed_asset ?? undefined,
       lastPhotoId,
     });

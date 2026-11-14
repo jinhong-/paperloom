@@ -62,6 +62,16 @@ export interface DevicePolicy {
   readonly quietStart: number | null;
   readonly quietEnd: number | null;
   readonly timezone: string;
+  /**
+   * How often the frame checks in at the moment the plan is made, in
+   * seconds.
+   *
+   * The frame can only show a photo when it wakes, and it wakes to check
+   * in. A photo that is planned sooner than the next check-in would be
+   * one the frame slept through, so the photos are never planned closer
+   * together than the frame checks in.
+   */
+  readonly syncIntervalNow?: number;
 }
 
 /** One scheduled display event. */
@@ -296,9 +306,13 @@ export function materializeSchedule(input: MaterializeInput): DisplayEvent[] {
    * follow are the new ones.
    *
    * While replaying, the photo that was chosen is taken from the plan
-   * rather than being chosen again, so that the stream stays in step. */
+   * rather than being chosen again, so that the stream stays in step.
+   *
+   * The plan holds the times the events are shown at, which are rounded
+   * down to the minute. The cursor is the exact time the event falls at,
+   * so the lookup is by the rounded time. */
   const existing = input.existing ?? [];
-  const existingByAt = new Map(existing.map((e) => [e.at, e]));
+  const existingByAt = new Map(existing.map((e) => [floorToMinute(e.at), e]));
 
   // Guard against a pathological policy producing an unbounded loop.
   const maxEvents = 10_000;
@@ -306,15 +320,25 @@ export function materializeSchedule(input: MaterializeInput): DisplayEvent[] {
   while (cursor < windowEnd && events.length < maxEvents) {
     const gallery = galleries[rng.below(galleries.length)]!;
 
-    // Choose the interval for the *next* display, so the first event lands
-    // at the window start and subsequent ones are spaced out.
+    /* Choose the interval for the *next* display, so the first event lands
+     * at the window start and subsequent ones are spaced out.
+     *
+     * The photos are never planned closer together than the frame checks
+     * in. The frame can only show a photo when it wakes, and it wakes to
+     * check in, so a photo planned sooner than the next check-in would be
+     * one the frame slept through. It would then show a different photo
+     * at the time the owner was told about, and the schedule in the
+     * management page would not be the one the frame was following. */
     const span = Math.max(0, gallery.maxInterval - gallery.minInterval);
-    const intervalSeconds = gallery.minInterval + (span > 0 ? rng.below(span + 1) : 0);
+    const floorSeconds = Math.max(gallery.minInterval, policy.syncIntervalNow ?? 0);
+    const ceilingSeconds = Math.max(floorSeconds, gallery.maxInterval);
+    const intervalSeconds =
+      floorSeconds + (ceilingSeconds > floorSeconds ? rng.below(ceilingSeconds - floorSeconds + 1) : 0);
 
     /* An event the plan already has keeps its photo, so that the replay
      * stays in step with the plan and the events that follow carry on
      * from where the plan left off. */
-    const already = existingByAt.get(cursor);
+    const already = existingByAt.get(floorToMinute(cursor));
 
     // Select a photo from this gallery's pool.
     const pool = candidates.filter((c) => c.belongsTo === gallery.galleryId);
@@ -338,7 +362,10 @@ export function materializeSchedule(input: MaterializeInput): DisplayEvent[] {
     // Quiet hours suppress the display but not the cursor: the next event
     // is still scheduled at a sensible time.
     if (!inQuietHours(cursor, policy.quietStart, policy.quietEnd, policy.timezone)) {
-      events.push({ at: cursor, asset: picked.contentHash });
+      /* The event is shown on the minute it falls in, and never before the
+       * window it belongs to. */
+      const at = Math.max(windowStart, floorToMinute(cursor));
+      events.push({ at, asset: picked.contentHash });
       lastPhotoId = picked.photoId;
       currentAsset = picked.contentHash;
     }
@@ -347,6 +374,19 @@ export function materializeSchedule(input: MaterializeInput): DisplayEvent[] {
   }
 
   return events;
+}
+
+/**
+ * Round a moment down to the minute it falls in.
+ *
+ * A photo that is due at twenty past half past six is shown at half past
+ * six, not at some point during it. The times in the plan are what the
+ * owner sees, and a time of twenty twenty-nine fifty-eight reads as
+ * twenty twenty-nine even though it is nearer half past, which is
+ * misleading.
+ */
+function floorToMinute(epochMs: number): number {
+  return Math.floor(epochMs / 60_000) * 60_000;
 }
 
 /**

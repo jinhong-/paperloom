@@ -46,6 +46,16 @@ static bool s_time_valid = false;
 #define NVS_NAMESPACE "paperloom"
 #define NVS_KEY_TIME_OFFSET "time_offset"
 
+/* Where the reading of the clock is kept, for the same reason.
+ *
+ * The offset only means something while the clock it corrects is
+ * counting. A deep sleep does not stop it, so the offset stays good
+ * across a sleep. A reset does stop it, and the offset then points at
+ * nothing: the clock reads from the beginning of the epoch and the
+ * offset adds a correction that belonged to a clock that no longer
+ * exists. Keeping the reading lets the two be compared on waking. */
+#define NVS_KEY_TIME_RAW "time_raw"
+
 /**
  * Write the offset to flash.
  */
@@ -54,6 +64,16 @@ static void time_offset_store(void) {
     if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) != ESP_OK) {
         return;
     }
+
+    /* The reading is kept with the offset, so that the two can be
+     * compared when the frame wakes. */
+    struct timeval tv;
+    int64_t raw = 0;
+    if (gettimeofday(&tv, NULL) == 0) {
+        raw = (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+        nvs_set_i64(nvs, NVS_KEY_TIME_RAW, raw);
+    }
+
     nvs_set_i64(nvs, NVS_KEY_TIME_OFFSET, s_time_offset_ms);
     nvs_commit(nvs);
     nvs_close(nvs);
@@ -61,17 +81,45 @@ static void time_offset_store(void) {
 
 /**
  * Read the offset back after a sleep.
+ *
+ * The offset is only kept if the clock has been counting since it was
+ * stored. A clock that has been reset reads from the beginning of the
+ * epoch, and the offset would then put the frame in the past by however
+ * much the offset was.
  */
 static void time_offset_restore(void) {
     nvs_handle_t nvs;
     if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
         return;
     }
+
     int64_t stored = 0;
     if (nvs_get_i64(nvs, NVS_KEY_TIME_OFFSET, &stored) == ESP_OK) {
-        s_time_offset_ms = stored;
-        s_time_valid = true;
-        ESP_LOGI(TAG, "The clock was anchored before the sleep");
+        int64_t stored_raw = 0;
+        bool have_raw = nvs_get_i64(nvs, NVS_KEY_TIME_RAW, &stored_raw) == ESP_OK;
+
+        struct timeval tv;
+        int64_t raw = 0;
+        bool have_now = gettimeofday(&tv, NULL) == 0;
+        if (have_now) {
+            raw = (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+        }
+
+        /* The clock has to have moved on since the offset was stored. It
+         * runs a little slow over a long sleep, so a small shortfall is
+         * expected and is allowed for. A clock that reads from the
+         * beginning of the epoch, or one that has gone backwards, means
+         * it was reset and the offset is of no use. */
+        const int64_t max_shortfall_ms = 60 * 1000;
+
+        if (!have_raw || !have_now || raw + max_shortfall_ms < stored_raw) {
+            ESP_LOGW(TAG, "The clock was reset while the frame was asleep; "
+                         "the time has to be asked for again");
+        } else {
+            s_time_offset_ms = stored;
+            s_time_valid = true;
+            ESP_LOGI(TAG, "The clock was anchored before the sleep");
+        }
     }
     nvs_close(nvs);
 }
@@ -173,6 +221,7 @@ void time_invalidate(void) {
     nvs_handle_t nvs;
     if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) == ESP_OK) {
         nvs_erase_key(nvs, NVS_KEY_TIME_OFFSET);
+        nvs_erase_key(nvs, NVS_KEY_TIME_RAW);
         nvs_commit(nvs);
         nvs_close(nvs);
     }
