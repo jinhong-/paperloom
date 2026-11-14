@@ -5,8 +5,8 @@ add-on runs the Paperloom API and management interface inside Home Assistant.
 
 ## Installation
 
-Add this repository in Home Assistant under **Settings → Add-ons → Add-on
-store → ⋮ → Repositories**:
+Add this repository in Home Assistant under **Settings → Apps → App store →
+⋮ → Repositories**:
 
 ```text
 https://github.com/jinhong-/paperloom
