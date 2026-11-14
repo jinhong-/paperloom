@@ -178,31 +178,46 @@ async function signed(
 
 test("a picture from Telegram is pinned to the frame's next check-in", async () => {
   const world = await makeWorld();
-  const now = Date.now();
 
+  /* The frame checks in every fifteen minutes, so the moment it will next
+   * check in is a fixed quarter of an hour away and does not drift with
+   * the clock. */
+  world.db
+    .prepare(
+      `INSERT INTO device_sync_rules (device_id, days, start_minute, end_minute, sync_interval, priority)
+       VALUES (?, 127, 0, 1440, 900, 0)`,
+    )
+    .run(world.deviceId);
+
+  const before = Date.now();
   const added = await world.photos.addPhoto(
     world.galleryId,
     "pinned.png",
     await image(220, 30, 30),
     { pin: true },
   );
+  const after = Date.now();
 
   assert.equal(added.pinnedTo?.length, 1, "the picture must be pinned to the frame");
 
-  /* The pin is the frame's next check-in, as the server works it out
-   * from the frame's own policy. The two are worked out a moment apart,
-   * so the times are a little different. */
-  const expected = world.schedules.nextCheckIn(world.deviceId, now);
+  /* The pin is the frame's next check-in, as the server works it out from
+   * the frame's own policy.
+   *
+   * The picture is rendered first, so the check-in is worked out from a
+   * moment between the two. The pin must therefore fall in that span. */
+  const pinnedAt = added.pinnedTo?.[0]!.at;
+  const earliest = world.schedules.nextCheckIn(world.deviceId, before);
+  const latest = world.schedules.nextCheckIn(world.deviceId, after);
   assert.ok(
-    Math.abs((added.pinnedTo?.[0]!.at ?? 0) - expected) < 5000,
-    "the picture must be pinned to the frame's next check-in",
+    pinnedAt >= earliest && pinnedAt <= latest,
+    `the picture must be pinned to the frame's next check-in (pinned ${pinnedAt}, expected between ${earliest} and ${latest})`,
   );
 
   /* The pin is recorded. */
   const pin = world.pins.pinFor(world.deviceId);
   assert.ok(pin, "the pin must be recorded");
   assert.equal(pin!.photo_id, added.id);
-  assert.equal(pin!.at, added.pinnedTo?.[0]!.at);
+  assert.equal(pin!.at, pinnedAt);
   assert.equal(pin!.shown, false);
 });
 
@@ -531,7 +546,8 @@ test("a picture is slotted into the frame's next check-in", async () => {
 
   /* The server's own estimate of when the frame will check in again is
    * the moment the picture is pinned to. */
-  const expected = server.schedules.nextCheckIn(deviceRowId, Date.now());
+  const before = Date.now();
+  const earliest = server.schedules.nextCheckIn(deviceRowId, before);
 
   /* A picture arrives and is pinned to that moment. */
   const pins = new PinnedPhotoService({ db, schedules: server.schedules });
@@ -548,12 +564,13 @@ test("a picture is slotted into the frame's next check-in", async () => {
     await image(220, 30, 30),
     { pin: true },
   );
+  const latest = server.schedules.nextCheckIn(deviceRowId, Date.now());
 
   assert.equal(photo.pinnedTo?.length, 1);
   const pinnedAt = photo.pinnedTo?.[0]!.at;
   assert.ok(
-    Math.abs(pinnedAt - expected) < 5000,
-    "the picture must be pinned to the frame's next check-in",
+    pinnedAt >= earliest && pinnedAt <= latest,
+    `the picture must be pinned to the frame's next check-in (pinned ${pinnedAt}, expected between ${earliest} and ${latest})`,
   );
 
   /* The frame syncs again and is given the picture at that moment. */
