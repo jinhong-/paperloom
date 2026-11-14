@@ -103,6 +103,44 @@ export interface SyncRule {
 }
 
 /**
+ * A gallery's Telegram bot.
+ */
+export interface TelegramBot {
+  id: number;
+  gallery_id: number;
+  gallery_name: string;
+  username: string | null;
+  error: string | null;
+  polling: boolean;
+  chat_count: number;
+  created_at: string;
+}
+
+/**
+ * A chat that talks to a gallery's bot.
+ */
+export interface TelegramChat {
+  id: number;
+  chat_id: string;
+  label: string | null;
+  created_at: string;
+}
+
+/**
+ * A picture waiting to be rendered.
+ */
+export interface PhotoJob {
+  id: number;
+  filename: string;
+  status: "pending" | "processing" | "done" | "failed";
+  origin: string;
+  attempts: number;
+  error: string | null;
+  created_at: string;
+  gallery_name: string;
+}
+
+/**
  * An error carrying the server's message.
  */
 export class ApiError extends Error {
@@ -328,6 +366,44 @@ export const api = {
     request<{ status: string; device_id: number }>(`/api/device/claim/${code}`, {
       method: "POST",
     }),
+
+  /* Telegram */
+
+  telegramBots: () => request<{ bots: TelegramBot[] }>("/api/telegram/bots"),
+
+  /**
+   * Give a gallery its own bot.
+   */
+  setTelegramBot: (galleryId: number, token: string) =>
+    request<{ status: string; gallery_id: number; username: string | null }>(
+      `/api/telegram/galleries/${galleryId}/bot`,
+      {
+        method: "POST",
+        body: JSON.stringify({ token }),
+      },
+    ),
+
+  removeTelegramBot: (galleryId: number) =>
+    request<{ status: string }>(`/api/telegram/galleries/${galleryId}/bot`, {
+      method: "DELETE",
+    }),
+
+  telegramChats: (botId: number) => request<TelegramChat[]>(`/api/telegram/bots/${botId}/chats`),
+
+  addTelegramChat: (botId: number, body: { chat_id: string; label?: string }) =>
+    request<{ status: string; chat_id: string }>(`/api/telegram/bots/${botId}/chats`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  removeTelegramChat: (botId: number, chatId: string) =>
+    request<{ status: string }>(
+      `/api/telegram/bots/${botId}/chats/${encodeURIComponent(chatId)}`,
+      { method: "DELETE" },
+    ),
+
+  telegramQueue: () =>
+    request<{ pending: number; jobs: PhotoJob[] }>("/api/telegram/queue"),
 };
 
 /**

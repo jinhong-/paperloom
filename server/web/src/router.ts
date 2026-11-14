@@ -8,6 +8,7 @@ import InvitationView from "@/views/InvitationView.vue";
 import LoginView from "@/views/LoginView.vue";
 import PeopleView from "@/views/PeopleView.vue";
 import SetupView from "@/views/SetupView.vue";
+import TelegramView from "@/views/TelegramView.vue";
 
 /**
  * The pages that can be seen without signing in.
@@ -30,6 +31,7 @@ export const router = createRouter({
     { path: "/people", name: "people", component: PeopleView },
     { path: "/galleries", name: "galleries", component: GalleriesView },
     { path: "/devices", name: "devices", component: DevicesView },
+    { path: "/telegram", name: "telegram", component: TelegramView },
     { path: "/claim/:code", name: "claim", component: ClaimView },
   ],
 });

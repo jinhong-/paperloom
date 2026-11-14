@@ -305,4 +305,118 @@ CREATE TABLE invitations (
 CREATE INDEX idx_invitations_code ON invitations(invite_code);
 `,
   },
+{
+    id: "0008_telegram",
+    sql: `
+-- The Telegram bot for a gallery.
+--
+-- Each gallery has its own bot, with its own token. A picture sent to
+-- that bot is filed into that gallery, so the server does not have to be
+-- told which chat a picture belongs in: the bot it arrived through says
+-- so by itself.
+--
+-- The token is the bot's identity as far as Telegram is concerned, and
+-- it is a secret, so it is stored here rather than in the environment.
+-- A gallery without a bot has no row here.
+CREATE TABLE telegram_bots (
+  id            INTEGER PRIMARY KEY,
+  -- The gallery the bot files its pictures into.
+  gallery_id    INTEGER NOT NULL UNIQUE REFERENCES galleries(id) ON DELETE CASCADE,
+  -- The bot's token, as given by BotFather.
+  token         TEXT NOT NULL,
+  -- The bot's own name, once it has been checked with Telegram.
+  username      TEXT,
+  -- The last error seen when talking to Telegram, if there was one.
+  error         TEXT,
+  -- Whether the server is currently asking Telegram for this bot's
+  -- updates.
+  polling       INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- The chats that talk to a gallery's bot.
+--
+-- A chat is not bound to a gallery directly, but to the bot that files
+-- into one. The gallery is worked out from the bot.
+CREATE TABLE telegram_chats (
+  id            INTEGER PRIMARY KEY,
+  -- The bot the chat talks to.
+  bot_id        INTEGER NOT NULL REFERENCES telegram_bots(id) ON DELETE CASCADE,
+  -- The Telegram chat id. Negative for group chats, which Telegram
+  -- makes unique per group.
+  chat_id       TEXT NOT NULL,
+  -- A human name for the chat, so it can be told apart in the UI.
+  label         TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (bot_id, chat_id)
+);
+
+CREATE INDEX idx_telegram_chats_bot ON telegram_chats(bot_id);
+
+-- Pictures waiting to be rendered.
+--
+-- Rendering a photo takes a moment, and a chat can send several at once,
+-- so a picture is queued and rendered in the background rather than in
+-- the request that received it. The queue is a table rather than an
+-- in-memory list so that a picture survives a restart of the server.
+CREATE TABLE photo_jobs (
+  id            INTEGER PRIMARY KEY,
+  -- The gallery the picture belongs in.
+  gallery_id    INTEGER NOT NULL REFERENCES galleries(id) ON DELETE CASCADE,
+  -- The hash of the uploaded bytes, which is where the original is kept.
+  source_hash   TEXT NOT NULL,
+  -- The name the picture is known by.
+  filename      TEXT NOT NULL,
+  -- Where the picture came from, e.g. "telegram".
+  origin        TEXT NOT NULL DEFAULT 'unknown',
+  -- pending | processing | done | failed
+  status        TEXT NOT NULL DEFAULT 'pending',
+  -- Why the job failed, when it did.
+  error         TEXT,
+  -- The row id of the photo once it has been rendered.
+  photo_id      INTEGER REFERENCES photos(id) ON DELETE SET NULL,
+  -- How many times the job has been tried.
+  attempts      INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX idx_photo_jobs_status ON photo_jobs(status, id);
+`,
+  },
+  {
+    id: "0009_pinned_photos",
+    sql: `
+-- A picture waiting to be shown at a particular moment.
+--
+-- A picture sent from Telegram is pinned to the next check-in of each
+-- frame that shows its gallery, so that it appears on the next wake
+-- rather than at some random point in the rotation.
+--
+-- The pin is one row per frame. It holds the moment the picture is to be
+-- shown and the picture itself.
+CREATE TABLE pinned_photos (
+  id            INTEGER PRIMARY KEY,
+  -- The frame the picture is pinned to.
+  device_id     INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  -- The picture to show.
+  photo_id      INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+  -- The moment the picture is to be shown, in epoch milliseconds.
+  at            INTEGER NOT NULL,
+  -- Whether the picture has been shown yet.
+  shown         INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  -- A frame holds at most one pinned picture at a time, and a picture is
+  -- pinned to one frame at a time.
+  UNIQUE (device_id),
+  UNIQUE (photo_id, device_id)
+);
+
+CREATE INDEX idx_pinned_photos_device ON pinned_photos(device_id);
+CREATE INDEX idx_pinned_photos_at ON pinned_photos(at);
+`,
+  },
 ];

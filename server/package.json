@@ -13,7 +13,7 @@
     "start": "node --enable-source-maps dist/index.js",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test src/panel.test.ts src/image.test.ts src/auth/signing.test.ts src/schedule/materialize.test.ts src/schedule/rules.test.ts src/api/device.test.ts src/api/accounts.test.ts src/api/integration.test.ts",
+    "test": "tsx --test src/panel.test.ts src/image.test.ts src/auth/signing.test.ts src/schedule/materialize.test.ts src/schedule/rules.test.ts src/api/device.test.ts src/api/accounts.test.ts src/api/integration.test.ts src/api/telegram.test.ts src/gallery/pinned.test.ts",
     "migrate": "tsx src/db/migrate.ts",
     "preview": "tsx src/tools/preview.ts",
     "live-check": "tsx src/tools/live-check.ts",

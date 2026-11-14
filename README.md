@@ -153,6 +153,30 @@ Configuration is by environment variable:
 | `PAPERLOOM_DATA_DIR` | `./data` | The database and the asset store |
 | `PAPERLOOM_COOKIE_SECRET` | a development value | The session cookie secret |
 | `PAPERLOOM_LOG_LEVEL` | `info` | The log level |
+| `PAPERLOOM_TELEGRAM_POLL_INTERVAL` | `3` | How often to ask Telegram for updates, in seconds |
+| `PAPERLOOM_TELEGRAM_API_BASE` | `https://api.telegram.org` | Where to reach the Telegram Bot API |
+
+### Telegram
+
+A picture sent to a bot in a chat is filed into the gallery that bot belongs
+to, and queued to be rendered for the panel.
+
+Each gallery has its own bot, with its own token. The bot is set up in the
+management interface, under **Telegram**: choose a gallery, and paste the
+token that @BotFather gave you. The token is checked with Telegram before it
+is saved, and the bot starts asking for pictures straight away.
+
+The server asks Telegram for new pictures itself, so it does not have to be
+reachable from the public internet. That suits a frame on a home network,
+which usually is not.
+
+A chat has to be linked to the bot before its pictures are accepted. The link
+is made in the management interface, under **Telegram**. A bot can only file
+pictures into the gallery it belongs to.
+
+The bot's token belongs to the gallery, so the person who owns the gallery
+sets it and decides which chats may use it. The token is stored in the
+database rather than in the environment, so it survives a restart.
 
 ### The firmware
 

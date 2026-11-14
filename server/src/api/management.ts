@@ -10,11 +10,12 @@ import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypt
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
-import { AssetStore } from "../assets/store.js";
+import type { AssetStore } from "../assets/store.js";
 import type { Db } from "../db/index.js";
 import type { ScheduleService } from "../schedule/service.js";
 import { EVERY_DAY } from "../schedule/rules.js";
-import { ROTATIONS, isRotation } from "../panel.js";
+import { isRotation } from "../panel.js";
+import { GalleryPhotoService } from "../gallery/photos.js";
 
 export interface ManagementOptions {
   readonly db: Db;
@@ -27,6 +28,10 @@ const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 export function registerManagementApi(app: FastifyInstance, options: ManagementOptions): void {
   const { db, assets, schedules, basePath } = options;
+
+  /* Adding a photo is shared with the Telegram bot, so it lives in one
+   * place rather than being written out here as well. */
+  const photos = new GalleryPhotoService({ db, assets, schedules });
 
   /**
    * Require a signed-in user.
@@ -62,12 +67,7 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
    * windows wrong.
    */
   function invalidateGallery(galleryId: number): void {
-    const devices = db
-      .prepare("SELECT device_id FROM device_galleries WHERE gallery_id = ?")
-      .all(galleryId) as Array<{ device_id: number }>;
-    for (const device of devices) {
-      schedules.invalidate(device.device_id);
-    }
+    photos.invalidateGallery(galleryId);
   }
 
   // ---------------------------------------------------------------------
@@ -528,67 +528,14 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
     }
 
     const source = Buffer.from(body.data, "base64");
-    const sourceHash = AssetStore.hash(source);
-    const filename = body.filename ?? `${sourceHash.slice(0, 12)}.jpg`;
 
-    /* Keep the original so the gallery can show the photo the owner
-     * uploaded, rather than only the panel's rendering of it. */
-    await assets.putSource(sourceHash, source);
-
-    const { renderAsset } = await import("../image.js");
-
-    /* Render the photo for each way a frame might be mounted.
-     *
-     * A frame that is turned needs the photo rendered at the turned
-     * dimensions and then turned back, which is a different picture and
-     * so a different asset. Rendering them all now means a frame can be
-     * turned later without waiting for the photo to be rendered again. */
-    const renderedByRotation = new Map<number, { hash: string; size: number }>();
-    for (const rotation of ROTATIONS) {
-      const rendered = await renderAsset(source, { rotation });
-      const hash = AssetStore.hash(rendered.data);
-      await assets.put(hash, rendered.data, 1200, 1600);
-      renderedByRotation.set(rotation, { hash, size: rendered.data.length });
-    }
-
-    const upright = renderedByRotation.get(0)!;
-
-    const result = db
-      .prepare(
-        `INSERT INTO photos
-           (gallery_id, filename, source_hash, content_hash, width, height, byte_size, weight)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 1.0)`,
-      )
-      .run(
-        Number(id),
-        filename,
-        sourceHash,
-        upright.hash,
-        1200,
-        1600,
-        upright.size,
-      );
-
-    const photoId = Number(result.lastInsertRowid);
-
-    /* Record the other renderings, so a frame that is turned can be told
-     * about the right asset. */
-    const insertAsset = db.prepare(
-      "INSERT OR REPLACE INTO photo_assets (photo_id, rotation, content_hash) VALUES (?, ?, ?)",
-    );
-    for (const [rotation, rendered] of renderedByRotation) {
-      insertAsset.run(photoId, rotation, rendered.hash);
-    }
-
-    /* A new photo changes what the gallery can show, so the schedules of
-     * the devices that show it are rebuilt. */
-    invalidateGallery(Number(id));
+    const added = await photos.addPhoto(Number(id), body.filename, source);
 
     await reply.send({
-      id: photoId,
-      filename,
-      content_hash: upright.hash,
-      byte_size: upright.size,
+      id: added.id,
+      filename: added.filename,
+      content_hash: added.contentHash,
+      byte_size: added.byteSize,
     });
   });
 

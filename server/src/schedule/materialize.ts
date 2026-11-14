@@ -252,6 +252,15 @@ export interface MaterializeInput {
   readonly currentAsset?: string;
   /** The most recently displayed photo id, to avoid an immediate repeat. */
   readonly lastPhotoId?: number;
+  /**
+   * A picture pinned to a particular moment.
+   *
+   * A picture that arrived from a chat is pinned to the frame's next
+   * check-in, so that it is shown on the next wake rather than waiting
+   * for its turn in the rotation. It takes the place of whatever would
+   * have been shown at that moment.
+   */
+  readonly pinned?: { readonly at: number; readonly contentHash: string };
 }
 
 /**
@@ -304,6 +313,34 @@ export function materializeSchedule(input: MaterializeInput): DisplayEvent[] {
   const existing = input.existing ?? [];
   const existingByAt = new Map(existing.map((e) => [floorToMinute(e.at), e]));
 
+  /* A picture pinned to a moment is shown at that moment.
+   *
+   * It does not take the place of a slot in the rotation: the pin is at
+   * a moment of its own, and the frame is asleep until then. Taking a
+   * slot instead would push the picture as far as a whole interval
+   * later, which is the very delay the pin exists to avoid. */
+  const pinned = input.pinned;
+
+  /* The pin is an event of its own, and it may fall between two ordinary
+   * slots, so it is placed at its own moment.
+   *
+   * A plan that already has an event at that moment keeps it: the pin was
+   * made for that moment, and the event already there is the one that was
+   * planned for it. Adding the pin as well would leave the frame changing
+   * twice at the same instant. */
+  const pinnedAt = pinned?.at;
+  const pinnedAlreadyThere =
+    pinnedAt !== undefined && existingByAt.has(pinnedAt);
+
+  if (
+    pinned !== undefined &&
+    !pinnedAlreadyThere &&
+    pinned.at >= windowStart &&
+    pinned.at < windowEnd
+  ) {
+    events.push({ at: pinned.at, asset: pinned.contentHash });
+  }
+
   // Guard against a pathological policy producing an unbounded loop.
   const maxEvents = 10_000;
 
@@ -352,13 +389,23 @@ export function materializeSchedule(input: MaterializeInput): DisplayEvent[] {
       /* The event is shown on the minute it falls in, and never before the
        * window it belongs to. */
       const at = Math.max(windowStart, floorToMinute(cursor));
-      events.push({ at, asset: picked.contentHash });
-      lastPhotoId = picked.photoId;
-      currentAsset = picked.contentHash;
+
+      /* The ordinary slot is skipped when the pinned picture is shown at
+       * this very moment, so that the frame does not change twice in the
+       * same instant. */
+      if (!events.some((e) => e.at === at)) {
+        events.push({ at, asset: picked.contentHash });
+        lastPhotoId = picked.photoId;
+        currentAsset = picked.contentHash;
+      }
     }
 
     cursor += Math.max(1, intervalSeconds) * 1000;
   }
+
+  /* The pin may fall before the window's first slot, so the events are
+   * put back in order. */
+  events.sort((a, b) => a.at - b.at);
 
   return events;
 }

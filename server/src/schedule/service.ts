@@ -285,6 +285,14 @@ export class ScheduleService {
       nextCheckIn + span * 1000,
     );
 
+    /* A picture that arrived from a chat is pinned to this frame's next
+     * check-in, so that it is shown on the next wake rather than waiting
+     * for its turn in the rotation.
+     *
+     * The plan reaches the frame's next check-in, so the pin falls inside
+     * it and is part of the plan. */
+    const pinned = this.pinnedFor(deviceId);
+
     const items = materializeSchedule({
       deviceId: String(deviceId),
       windowStart,
@@ -298,6 +306,7 @@ export class ScheduleService {
       },
       currentAsset: device.displayed_asset ?? undefined,
       lastPhotoId,
+      pinned,
     });
 
     /* The events that have long since passed are dropped.
@@ -563,6 +572,33 @@ export class ScheduleService {
       weight: r.weight,
       belongsTo: r.gallery_id,
     }));
+  }
+
+  /**
+   * The picture pinned to a frame, and the moment it is to be shown.
+   *
+   * The asset is looked up for the frame's own rotation, as it is for
+   * every other picture, so that a turned frame shows the pinned picture
+   * the right way up.
+   */
+  private pinnedFor(deviceId: number): { at: number; contentHash: string } | undefined {
+    const rotation = this.rotationFor(deviceId);
+
+    const row = this.db
+      .prepare(
+        `SELECT pp.at, COALESCE(pa.content_hash, p.content_hash) AS content_hash
+         FROM pinned_photos pp
+         JOIN photos p ON p.id = pp.photo_id
+         LEFT JOIN photo_assets pa ON pa.photo_id = pp.photo_id AND pa.rotation = ?
+         WHERE pp.device_id = ? AND pp.shown = 0
+         LIMIT 1`,
+      )
+      .get(rotation, deviceId) as
+      | { at: number; content_hash: string | null }
+      | undefined;
+
+    if (!row || !row.content_hash) return undefined;
+    return { at: row.at, contentHash: row.content_hash };
   }
 
   /**
