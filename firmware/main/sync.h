@@ -93,6 +93,17 @@ bool sync_enrol(char *claim_code, size_t claim_code_len, char *claim_url, size_t
  * The claim code from the last enrolment.
  */
 /**
+ * The time the frame is next due to check in, as the server gave it.
+ *
+ * This is the server's own timestamp, and not the frame's clock, so that
+ * the frame can compare it with the schedule without having to trust its
+ * own clock.
+ *
+ * @return true if there is a time to report.
+ */
+bool sync_next_sync_at(int64_t *out_ms);
+
+/**
  * Whether the server refused the last request because the clock was out
  * of the window it accepts.
  *

@@ -50,12 +50,14 @@ def main() -> int:
     print("Press Ctrl-C to stop.")
     print()
 
+    # The output is written as bytes, so that anything the board sends
+    # comes through even if it is not valid text.
     try:
         while True:
             data = s.read(4096)
             if data:
-                sys.stdout.write(data.decode("utf-8", errors="replace"))
-                sys.stdout.flush()
+                sys.stdout.buffer.write(data)
+                sys.stdout.buffer.flush()
     except KeyboardInterrupt:
         print()
     finally:

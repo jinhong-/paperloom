@@ -431,6 +431,18 @@ int64_t schedule_ends_at_ms(void) {
 }
 
 /**
+ * The time of the last event in the schedule, for comparing with the
+ * time of the next check-in.
+ *
+ * The frame needs this to decide whether it can sleep until its next
+ * check-in without checking in first. Both times come from the server, so
+ * the comparison does not depend on the frame's own clock being right.
+ */
+int64_t schedule_last_event_ms(void) {
+    return schedule_ends_at_ms();
+}
+
+/**
  * The asset hash of the event at an index, or NULL.
  */
 const char *schedule_asset_at(size_t index) {

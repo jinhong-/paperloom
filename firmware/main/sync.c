@@ -532,6 +532,21 @@ bool sync_enrol(char *claim_code, size_t claim_code_len, char *claim_url, size_t
 }
 
 /**
+ * The time the frame is next due to check in, as the server gave it.
+ *
+ * This is the server's own timestamp, and not the frame's clock, so that
+ * the frame can compare it with the schedule without having to trust its
+ * own clock.
+ */
+bool sync_next_sync_at(int64_t *out_ms) {
+    if (s_next_sync_at[0] == '\0') {
+        return false;
+    }
+
+    return parse_iso8601_ms(s_next_sync_at, out_ms) == ESP_OK;
+}
+
+/**
  * Whether the server refused the last request because the clock was out
  * of the window it accepts.
  *

@@ -37,19 +37,6 @@ static int64_t s_time_offset_ms = 0;
 /* Whether the clock has ever been anchored to the server. */
 static bool s_time_valid = false;
 
-/* The server's time when the clock was last anchored.
- *
- * The real-time clock keeps running through a deep sleep, but not
- * perfectly: it loses a little time, and the correction made when the
- * clock was last anchored is not enough to put it right again. The
- * difference between the clock and the server is kept here, so that a
- * clock which has drifted too far can be spotted and put right.
- *
- * Without this a frame whose clock is hours out acts on the wrong time:
- * it thinks its next photo is in the future when it is in the past, and
- * it never checks in to find out. */
-static int64_t s_last_server_time_ms = 0;
-
 /* Where the offset is kept.
  *
  * The offset has to survive a deep sleep. A frame spends most of its life
@@ -58,15 +45,6 @@ static int64_t s_last_server_time_ms = 0;
  * time it wakes. */
 #define NVS_NAMESPACE "paperloom"
 #define NVS_KEY_TIME_OFFSET "time_offset"
-
-/* How far the clock may drift from the server's time before it is
- * treated as untrustworthy.
- *
- * The real-time clock loses a little time in every deep sleep, and the
- * correction made when the frame last checked in does not put it right
- * again. A minute is generous enough for the drift to be harmless and
- * tight enough that a clock which has really gone wrong is noticed. */
-#define MAX_CLOCK_DRIFT_MS (60 * 1000)
 
 /**
  * Write the offset to flash.
@@ -175,7 +153,6 @@ esp_err_t time_set_from_server(int64_t server_time_ms) {
     int64_t raw = now - s_time_offset_ms;
     s_time_offset_ms = server_time_ms - raw;
     s_time_valid = true;
-    s_last_server_time_ms = server_time_ms;
     time_offset_store();
 
     ESP_LOGI(TAG, "Clock corrected by %lld ms", (long long)s_time_offset_ms);
@@ -191,7 +168,6 @@ esp_err_t time_set_from_server(int64_t server_time_ms) {
 void time_invalidate(void) {
     s_time_valid = false;
     s_time_offset_ms = 0;
-    s_last_server_time_ms = 0;
 
     /* The offset is no good, so it is forgotten. */
     nvs_handle_t nvs;
@@ -229,25 +205,5 @@ bool time_is_plausible(void) {
         return false;
     }
 
-    if (now < earliest_plausible_ms) {
-        return false;
-    }
-
-    /* The clock has to agree with the server to within a minute.
-     *
-     * The real-time clock drifts while the frame is asleep, and the
-     * correction made when it last checked in is not enough to put it
-     * right again. A clock that has drifted further than that cannot be
-     * trusted to say when the next photo is due, and the frame would
-     * sleep through it. */
-    if (s_last_server_time_ms != 0) {
-        int64_t drift = now - s_last_server_time_ms;
-        if (drift < 0 || drift > MAX_CLOCK_DRIFT_MS) {
-            ESP_LOGW(TAG, "The clock has drifted %lld ms from the server's time",
-                     (long long)drift);
-            return false;
-        }
-    }
-
-    return true;
+    return now >= earliest_plausible_ms;
 }

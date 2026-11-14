@@ -91,6 +91,16 @@ size_t schedule_event_count(void);
 int64_t schedule_ends_at_ms(void);
 
 /**
+ * The time of the last event in the schedule.
+ *
+ * The frame needs this to decide whether it can sleep until its next
+ * check-in with a schedule that reaches that far. Both times come from
+ * the server, so the comparison does not depend on the frame's own clock
+ * being right.
+ */
+int64_t schedule_last_event_ms(void);
+
+/**
  * The asset hash of the event at an index, or NULL if out of range.
  */
 const char *schedule_asset_at(size_t index);

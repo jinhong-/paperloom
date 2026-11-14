@@ -227,15 +227,30 @@ static int64_t run_cycle(wake_reason_t reason) {
         sync_due = true;
     }
 
-    /* The frame checks in when its schedule runs out, as well as when the
-     * server says it is due.
+    /* The frame checks in when it cannot sleep until its next check-in
+     * with a schedule that reaches that far.
      *
-     * The server's time is a hint: it was given when the frame last
-     * checked in, and the rules may have changed since. The schedule the
-     * frame holds is the thing that must not run out, because a frame
-     * with nothing left to show has nothing to show. */
-    int64_t schedule_ends_at = schedule_ends_at_ms();
-    if (schedule_ends_at == 0 || now_ms >= schedule_ends_at) {
+     * The frame's own clock cannot be trusted to say when anything is
+     * due: it drifts while the frame is asleep, and the correction made
+     * when it last checked in does not put it right again. A frame whose
+     * clock is hours out would think its next photo was in the future
+     * when it was in the past, and would sleep through it.
+     *
+     * So the decision is made from two numbers that both come from the
+     * server: the time of the last event in the schedule, and the time
+     * of the next check-in. If the schedule reaches past the check-in,
+     * then whatever the clock says, the frame will wake in time for the
+     * check-in, and it does not need to check in now. If it does not
+     * reach that far, the frame must check in, because otherwise it
+     * would run out of schedule before its next check-in came round.
+     *
+     * This works whatever the clock is doing.
+     */
+    int64_t next_sync_at = 0;
+    bool have_next_sync = sync_next_sync_at(&next_sync_at);
+    int64_t schedule_ends_at = schedule_last_event_ms();
+
+    if (have_next_sync && (schedule_ends_at == 0 || schedule_ends_at < next_sync_at)) {
         sync_due = true;
     }
 
