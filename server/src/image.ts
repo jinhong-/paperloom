@@ -30,6 +30,16 @@ import {
   type DitherAlgorithm,
   type Rotation,
 } from "./panel.js";
+import {
+  compressRange,
+  DEFAULT_PRESET,
+  deltaE,
+  panelEndpoints,
+  rgbToLab,
+  toneMap,
+  toneParamsFor,
+  type ToneParams,
+} from "./tone.js";
 
 /**
  * A colour, expressed in sRGB 0-255.
@@ -38,28 +48,32 @@ export type Rgb = readonly [number, number, number];
 
 /**
  * Measured panel response: the RGB value each panel colour actually reaches,
- * plus the display's black and white luminance.
+ * plus the display's black and white points.
  *
  * `black`/`white` are the measured extremes used for dynamic-range
- * compression. When a panel has not been calibrated we fall back to the
- * ideal values, which is what the reference firmware does out of the box.
+ * compression. They are held as lightnesses, which is the measure the
+ * range is moved in, so that the picture keeps its contrast and its
+ * colours.
+ *
+ * When a panel has not been calibrated we fall back to the ideal values,
+ * which is what the reference firmware does out of the box.
  */
 export interface PanelPalette {
   /** Measured RGB for each of the six panel colours, in `PALETTE_INDICES` order. */
   readonly perceived: readonly Rgb[];
-  /** Luminance of the panel's black point (linear, 0-1). */
+  /** Lightness of the panel's black point (0-100). */
   readonly blackY: number;
-  /** Luminance of the panel's white point (linear, 0-1). */
+  /** Lightness of the panel's white point (0-100). */
   readonly whiteY: number;
 }
 
 /**
- * The default palette: ideal colours and ideal luminance endpoints.
+ * The default palette: ideal colours and ideal lightness endpoints.
  */
 export const DEFAULT_PALETTE: PanelPalette = {
   perceived: THEORETICAL_RGB,
   blackY: 0,
-  whiteY: 1,
+  whiteY: 100,
 };
 
 /**
@@ -95,6 +109,47 @@ export function nearestPaletteIndex(
   return best;
 }
 
+/**
+ * The palette colour nearest a pixel, by how the two colours look rather
+ * than by the distance between the numbers.
+ *
+ * Two colours can be far apart in the numbers and still look the same,
+ * because the numbers do not measure what the eye sees. Measuring in LAB
+ * space, which does, gives a truer answer.
+ *
+ * The palette is measured once and kept, because converting it for every
+ * pixel would be wasteful.
+ */
+export function nearestPaletteIndexLab(
+  r: number,
+  g: number,
+  b: number,
+  palette: readonly Rgb[],
+  paletteLab: readonly (readonly [number, number, number])[],
+): number {
+  const pixel = rgbToLab(r, g, b);
+  let best = 0;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  for (let i = 0; i < palette.length; i++) {
+    const lab = paletteLab[i];
+    if (!lab) continue;
+    const distance = deltaE(pixel, lab);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = i;
+    }
+  }
+  return best;
+}
+
+/**
+ * The palette measured in LAB space.
+ */
+export function paletteInLab(palette: readonly Rgb[]): Array<[number, number, number]> {
+  return palette.map((p) => rgbToLab(p[0], p[1], p[2]));
+}
+
 function linearize(value: number): number {
   const s = value / 255;
   return s > 0.04045 ? Math.pow((s + 0.055) / 1.055, 2.4) : s / 12.92;
@@ -108,23 +163,51 @@ function delinearize(linear: number): number {
 }
 
 /**
- * Fit an image to the panel, cropping to fill.
+ * Fit an image to the panel.
  *
- * Uses sharp's `cover` fit, which scales so the image fills the target and
- * crops the overflow from the centre.
+ * The picture is fitted *inside* the panel and the rest is left blank,
+ * rather than being scaled up and cropped. A landscape picture on a
+ * portrait panel would otherwise lose its left and right edges, and there
+ * is no way to tell from the picture alone which parts were thrown away.
+ *
+ * The panel is black, so the space around the picture is the panel's own
+ * black, which is what it shows when it is empty.
  */
 export async function fitToPanel(
   input: Buffer,
   width = PANEL_WIDTH,
   height = PANEL_HEIGHT,
 ): Promise<Buffer> {
-  return sharp(input)
-    .resize(width, height, { fit: "cover", position: "centre" })
+  const resized = await sharp(input)
+    .resize(width, height, {
+      fit: "inside",
+      position: "centre",
+      background: { r: 0, g: 0, b: 0, alpha: 1 },
+    })
     .removeAlpha()
     .toColourspace("srgb")
     .raw()
-    .toBuffer({ resolveWithObject: true })
-    .then((r) => r.data);
+    .toBuffer({ resolveWithObject: true });
+
+  const { data, info } = resized;
+
+  /* The picture is now smaller than the panel, so it has to be placed on
+   * the panel's black. */
+  if (info.width === width && info.height === height) {
+    return data;
+  }
+
+  const out = Buffer.alloc(width * height * 3, 0);
+  const offsetX = Math.floor((width - info.width) / 2);
+  const offsetY = Math.floor((height - info.height) / 2);
+
+  for (let y = 0; y < info.height; y++) {
+    const from = y * info.width * 3;
+    const to = ((y + offsetY) * width + offsetX) * 3;
+    data.copy(out, to, from, from + info.width * 3);
+  }
+
+  return out;
 }
 
 /**
@@ -132,8 +215,8 @@ export async function fitToPanel(
  * black-to-white response rather than the ideal 0-255 range.
  *
  * The panel's real black point is above zero and its white point is below
- * 255, so an unmodified photo looks washed out. We remap linear luminance
- * onto `[blackY, whiteY]` and scale the chroma proportionally, which
+ * 255, so an unmodified photo looks washed out. The range is remapped
+ * onto `[blackY, whiteY]` and the chroma scaled proportionally, which
  * preserves hue and saturation while fitting the range.
  */
 export function compressDynamicRange(
@@ -141,35 +224,23 @@ export function compressDynamicRange(
   palette: PanelPalette = DEFAULT_PALETTE,
 ): Buffer {
   const out = Buffer.from(rgb);
-  const range = palette.whiteY - palette.blackY;
-
-  for (let i = 0; i < out.length; i += 3) {
-    const lr = linearize(out[i]!);
-    const lg = linearize(out[i + 1]!);
-    const lb = linearize(out[i + 2]!);
-
-    const luminance = 0.2126729 * lr + 0.7151522 * lg + 0.072175 * lb;
-    const compressed = palette.blackY + luminance * range;
-
-    let scale: number;
-    if (luminance > 1e-6) {
-      scale = compressed / luminance;
-    } else {
-      // A pure-black pixel has no chroma to scale, so it maps directly to
-      // the panel's black point. This is what keeps deep shadows from
-      // washing out on a panel whose black is not truly black.
-      const black = delinearize(palette.blackY);
-      out[i] = black;
-      out[i + 1] = black;
-      out[i + 2] = black;
-      continue;
-    }
-
-    out[i] = delinearize(lr * scale);
-    out[i + 1] = delinearize(lg * scale);
-    out[i + 2] = delinearize(lb * scale);
-  }
+  compressRangeOnto(out, palette);
   return out;
+}
+
+/**
+ * Compress the dynamic range in place.
+ *
+ * The range is only moved when the panel's black and white are not the
+ * full range. When they are, moving the range would only lose
+ * precision, so the picture is left alone.
+ */
+export function compressRangeOnto(rgb: Buffer, palette: PanelPalette): void {
+  if (palette.blackY <= 0 && palette.whiteY >= 100) {
+    /* The panel shows the whole range, so there is nothing to move. */
+    return;
+  }
+  compressRange(rgb, palette.blackY, palette.whiteY);
 }
 
 /**
@@ -193,9 +264,14 @@ export function ditherToPalette(
   algorithm: DitherAlgorithm = "floyd-steinberg",
   width = PANEL_WIDTH,
   height = PANEL_HEIGHT,
+  colorMethod: "rgb" | "lab" = "rgb",
 ): Uint8Array {
   const kernel = diffusionKernel(algorithm);
   const out = new Uint8Array(width * height);
+
+  /* The palette is measured in LAB space once, rather than for every
+   * pixel. */
+  const paletteLab = colorMethod === "lab" ? paletteInLab(palette) : [];
 
   // Error state per channel per scanline. Three lines are needed because the
   // widest kernels diffuse into row y+2.
@@ -220,7 +296,10 @@ export function ditherToPalette(
       g = g < 0 ? 0 : g > 255 ? 255 : g;
       b = b < 0 ? 0 : b > 255 ? 255 : b;
 
-      const index = nearestPaletteIndex(r, g, b, palette);
+      const index =
+        colorMethod === "lab"
+          ? nearestPaletteIndexLab(r, g, b, palette, paletteLab)
+          : nearestPaletteIndex(r, g, b, palette);
       out[y * width + x] = index;
 
       // The error is measured against the palette entry we chose.
@@ -268,22 +347,38 @@ export async function renderAsset(
     readonly compressRange?: boolean;
     /** How far the picture is turned on the panel. */
     readonly rotation?: Rotation;
+    /** How the picture is prepared: which preset, and any changes to it. */
+    readonly tone?: Partial<ToneParams>;
   } = {},
 ): Promise<{ data: Buffer; raw: Buffer; indices: Uint8Array }> {
   const palette = options.palette ?? DEFAULT_PALETTE;
   const compressRange = options.compressRange ?? true;
   const rotation = options.rotation ?? 0;
+  const tone: ToneParams = { ...toneParamsFor(DEFAULT_PRESET), ...(options.tone ?? {}) };
 
   /* A turned picture is rendered at the turned dimensions, so that it
    * fills the panel rather than being letterboxed inside it. */
   const target = rotatedSize(rotation);
 
   let rgb = await fitToPanel(input, target.width, target.height);
-  if (compressRange) {
-    rgb = compressDynamicRange(rgb, palette);
+
+  /* The picture is prepared before it is put on the panel: made brighter
+   * or darker, more or less colourful, and its tones bent so that the
+   * shadows and the highlights are held back. */
+  toneMap(rgb, tone);
+
+  if (compressRange && tone.compressDynamicRange) {
+    compressRangeOnto(rgb, palette);
   }
 
-  let indices = ditherToPalette(rgb, palette.perceived, options.dither ?? "floyd-steinberg");
+  let indices = ditherToPalette(
+    rgb,
+    palette.perceived,
+    options.dither ?? "floyd-steinberg",
+    target.width,
+    target.height,
+    tone.colorMethod,
+  );
 
   /* The ditherer works in the picture's own orientation. Turning the
    * colours afterwards would break up the error diffusion, so the picture
