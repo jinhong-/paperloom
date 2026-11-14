@@ -58,6 +58,11 @@ async function makeWorld(): Promise<{
       .run(user.id).lastInsertRowid,
   );
 
+  /* A frame, so that a plan can be made for it. */
+  db.prepare("INSERT INTO devices (user_id, name, device_id) VALUES (?, 'Frame', 'dev-1')").run(
+    user.id,
+  );
+
   return { db, assets, photos, galleryId };
 }
 
@@ -91,9 +96,63 @@ describe("the way a gallery's pictures are prepared", () => {
       .get(added.id) as { content_hash: string };
     assert.notEqual(after.content_hash, added.contentHash);
 
-    /* The rendering that was replaced is gone, and the new one is there. */
-    assert.equal(await world.assets.get(added.contentHash), null);
+    /* The new rendering is there. */
     assert.ok(await world.assets.get(after.content_hash));
+  });
+
+  it("keeps a rendering that a frame's plan still names", async () => {
+    const world = await makeWorld();
+
+    const added = await world.photos.addPhoto(
+      world.galleryId,
+      "one.png",
+      await image(220, 30, 30),
+    );
+
+    /* A frame is working to a plan that names the rendering. The plan is
+     * not rebuilt until the frame checks in, and until then the frame
+     * will ask for the asset the plan names. */
+    world.db
+      .prepare(
+        `INSERT INTO schedules (device_id, revision, window_start, window_end, events_json)
+         VALUES ((SELECT id FROM devices WHERE device_id = 'dev-1'), 'rev-1',
+                 '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z', ?)`,
+      )
+      .run(JSON.stringify([{ at: 1767225600000, asset: added.contentHash }]));
+
+    world.db
+      .prepare("UPDATE galleries SET tone_preset = 'grayscale' WHERE id = ?")
+      .run(world.galleryId);
+
+    await world.photos.rerenderGallery(world.galleryId);
+
+    /* The rendering the plan names is still there to be downloaded. */
+    assert.ok(
+      await world.assets.get(added.contentHash),
+      "a rendering a plan names must not be removed",
+    );
+  });
+
+  it("removes a rendering that nothing refers to", async () => {
+    const world = await makeWorld();
+
+    const added = await world.photos.addPhoto(
+      world.galleryId,
+      "one.png",
+      await image(220, 30, 30),
+    );
+
+    world.db
+      .prepare("UPDATE galleries SET tone_preset = 'grayscale' WHERE id = ?")
+      .run(world.galleryId);
+
+    await world.photos.rerenderGallery(world.galleryId);
+
+    assert.equal(
+      await world.assets.get(added.contentHash),
+      null,
+      "a rendering nothing refers to is removed",
+    );
   });
 
   it("keeps the original, so the picture can be rendered again", async () => {
