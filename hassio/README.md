@@ -15,6 +15,11 @@ https://github.com/jinhong-/paperloom
 Then install **Paperloom** and start it. The management interface is
 available from the add-on's **Open Web UI** action.
 
+The app images are built by GitHub Actions and published publicly to GitHub
+Container Registry. Home Assistant pulls the image matching the machine's
+architecture, so no local compilation is required on the Home Assistant
+machine.
+
 ## Device access
 
 The e-paper frame cannot use the Home Assistant ingress URL because ingress

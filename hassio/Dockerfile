@@ -1,6 +1,6 @@
-# The Supervisor builds each add-on from its own directory, so the
-# Dockerfile cannot copy files from the repository root. The server is
-# therefore packaged into this directory before the image is built.
+# Build Paperloom from the repository's canonical server directory.
+# The Home Assistant build action supplies the repository root as the
+# build context; local builds should use the same command from the root.
 FROM node:22-bookworm-slim AS builder
 
 RUN apt-get update \
@@ -8,14 +8,14 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app/server
-COPY package.json package-lock.json ./
-COPY web/package.json ./web/package.json
-COPY scripts/build-web.mjs ./scripts/build-web.mjs
+COPY server/package.json server/package-lock.json ./
+COPY server/web/package.json ./web/package.json
+COPY server/scripts/build-web.mjs ./scripts/build-web.mjs
 RUN npm ci
 
-COPY src/ ./src/
-COPY web/ ./web/
-COPY tsconfig.json ./
+COPY server/src/ ./src/
+COPY server/web/ ./web/
+COPY server/tsconfig.json ./
 RUN npm run build && npm run build:web
 
 FROM node:22-bookworm-slim AS runtime
@@ -30,14 +30,14 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app/server
-COPY package.json package-lock.json ./
-COPY web/package.json ./web/package.json
-COPY scripts/build-web.mjs ./scripts/build-web.mjs
+COPY server/package.json server/package-lock.json ./
+COPY server/web/package.json ./web/package.json
+COPY server/scripts/build-web.mjs ./scripts/build-web.mjs
 RUN npm ci --omit=dev && npm cache clean --force
 
 COPY --from=builder /app/server/dist ./dist
 COPY --from=builder /app/server/web/dist ./web/dist
-COPY rootfs/ /
+COPY hassio/rootfs/ /
 
 RUN chmod +x /run.sh \
     && mkdir -p /share/paperloom

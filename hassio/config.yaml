@@ -3,6 +3,7 @@ slug: paperloom
 version: "0.1.0"
 description: Self-hosted server for Paperloom e-paper photo frames
 url: https://github.com/jinhong-/paperloom
+image: "ghcr.io/jinhong-/paperloom-{arch}:{version}"
 startup: application
 arch:
   - aarch64
