@@ -44,6 +44,20 @@ bool time_is_valid(void);
 bool time_is_plausible(void);
 
 /**
+ * Whether the frame lost its power while it was asleep.
+ *
+ * A frame that has been unpowered comes back with its clock counting from
+ * the beginning of the epoch. It has no idea what time it is, so it has
+ * to ask the server before it can do anything else.
+ *
+ * This is separate from `time_is_plausible` because the reading of the
+ * clock can look perfectly reasonable while being the wrong time: a
+ * clock that was reset and then had its old correction put back on it
+ * reads a real time, and not this one.
+ */
+bool time_lost_power(void);
+
+/**
  * Forget that the clock was anchored.
  *
  * This is used when the clock's reading turns out to be impossible, which
