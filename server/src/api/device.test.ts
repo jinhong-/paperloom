@@ -362,6 +362,82 @@ test("the schedule is identical across retries", async (t) => {
   assert.equal(a, b, "a retry must yield the same schedule revision");
 });
 
+test("the frame is given the whole plan the revision names", async (t) => {
+  const server = await makeServer();
+  t.after(async () => {
+    await server.app.close();
+  });
+
+  const { galleryId } = await seedGallery(server);
+  const db = server.db;
+
+  const deviceId = `dev-${randomUUID()}`;
+  const keys = generateKeyPair();
+
+  db.prepare(
+    `INSERT INTO devices (name, device_id, public_key, state, user_id)
+     VALUES ('d', ?, ?, 'claimed', NULL)`,
+  ).run(deviceId, publicKeyToBase64(keys.publicKeyPem));
+
+  const deviceRowId = (
+    db.prepare("SELECT id FROM devices WHERE device_id = ?").get(deviceId) as { id: number }
+  ).id;
+  db.prepare("INSERT INTO device_galleries (device_id, gallery_id) VALUES (?, ?)").run(
+    deviceRowId,
+    galleryId,
+  );
+  db.prepare(
+    `INSERT INTO device_policies (device_id, sync_interval, lookahead) VALUES (?, 3600, 10800)`,
+  ).run(deviceRowId);
+  db.prepare(
+    `INSERT INTO device_sync_rules
+       (device_id, days, start_minute, end_minute, sync_interval, priority)
+     VALUES (?, 127, 480, 1320, 300, 0)`,
+  ).run(deviceRowId);
+
+  const response = await signed(
+    server,
+    keys,
+    deviceId,
+    "POST",
+    "/api/device/sync",
+    Buffer.from(JSON.stringify({ device_id: deviceId })),
+  );
+  assert.equal(response.status, 200);
+
+  const body = response.body as {
+    schedule: { revision: string; items: Array<{ at: string; asset: string }> };
+  };
+  const sent = body.schedule.items;
+
+  /* The revision names the plan. The frame is given the whole of it, so
+   * that the plan the frame works to is the plan the revision describes.
+   *
+   * If the frame were given only part of it, it would be working to a
+   * plan the server does not hold, and would show a photo at a time the
+   * server does not have. */
+  const stored = db
+    .prepare("SELECT revision, events_json FROM schedules WHERE device_id = ?")
+    .get(deviceRowId) as { revision: string; events_json: string };
+  const plan = JSON.parse(stored.events_json) as Array<{ at: number; asset: string }>;
+
+  assert.equal(stored.revision, body.schedule.revision, "the revision must be the plan's");
+  assert.equal(
+    sent.length,
+    plan.length,
+    "the frame must be given every event of the plan the revision names",
+  );
+
+  for (let i = 0; i < plan.length; i++) {
+    assert.equal(
+      Date.parse(sent[i]!.at),
+      plan[i]!.at,
+      `the event at ${i} must be the one the plan says`,
+    );
+    assert.equal(sent[i]!.asset, plan[i]!.asset, `the photo at ${i} must be the plan's`);
+  }
+});
+
 test("enrolling twice gives the same claim code", async (t) => {
   const server = await makeServer();
   t.after(async () => {

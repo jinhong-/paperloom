@@ -15,14 +15,32 @@ import type { ScheduleService } from "../schedule/service.js";
 import { verifyDeviceRequest } from "./device-auth.js";
 
 /**
- * How long an event is still sent after its time.
+ * How long after an event's time its photo is still offered to the frame.
  *
  * The frame wakes at the time of the event, but its clock is a little
  * behind the server's, so it asks for the schedule either side of the
- * moment the event is due. The event is kept for a minute afterwards so
- * that it is not dropped in that gap.
+ * moment the event is due. The photo is still offered for a while
+ * afterwards so that it is not dropped in that gap.
+ *
+ * The times in the plan are on the minute, so an event can be up to a
+ * minute in the past by the time the frame asks for it.
  */
-const EVENT_GRACE_MS = 60 * 1000;
+const EVENT_GRACE_MS = 2 * 60 * 1000;
+
+/**
+ * The most events a frame is given in one plan.
+ *
+ * The frame holds the schedule in memory, and a plan that does not fit is
+ * truncated: the frame would then be working to a plan that is not the
+ * one the server holds, and would show a photo at a time the server does
+ * not have. The plan is cut to what the frame can hold, and the times in
+ * it do not move, so the frame and the server still agree.
+ *
+ * The frame holds a hundred and twenty-eight events, and a plan that
+ * reaches three hours ahead with a photo every two minutes holds about
+ * ninety, so there is room to spare.
+ */
+const MAX_EVENTS = 128;
 
 /**
  * How many assets a frame on battery is given in one check-in.
@@ -253,22 +271,26 @@ export function registerDeviceApi(app: FastifyInstance, options: DeviceApiOption
     const dashboardUrl = `${basePath.replace(/\/api\/device$/, "")}/`;
     const policy = schedules.policyFor(auth.id);
 
-    /* Only the events that are still to come, and the one that has just
-     * arrived.
+    /* The whole plan is sent to the frame, not just the part of it that
+     * is still to come.
      *
-     * A frame is asleep for most of the time, and the schedule is built
-     * for a window that starts in the past. An event whose time has
-     * long since passed is one the frame missed, and showing it now
-     * would show a photo late and out of order. A missed event is a
-     * missed event; the frame shows what is coming.
+     * The revision identifies the plan. If the frame were given only part
+     * of the plan, the revision would describe something the frame does
+     * not have, and the frame would be working to a plan that is not the
+     * one the server holds. The frame would then show a photo at a time
+     * the server does not have, and the times in the management page
+     * would not be the times the frame is working to.
      *
-     * The grace period covers the moment the event arrives. The frame
-     * wakes at the event's time, but its clock is a little behind the
-     * server's, so it asks for the schedule either side of the moment
-     * the event is due. Without the grace period the event would be
-     * dropped in the gap and the photo would never be shown. */
-    const grace = now - EVENT_GRACE_MS;
-    const upcoming = window.items.filter((item) => item.at > grace);
+     * The frame shows the events whose time has arrived, and keeps the
+     * time of the last one it showed, so the events in the recent past
+     * are of no use to it. They are sent anyway, because they are part
+     * of the plan and the plan is what the revision names. */
+    /* The plan is cut to what the frame can hold. The events nearest the
+     * frame are kept and the furthest are dropped, because the frame is
+     * working towards them and the furthest are the ones it will ask
+     * about again anyway. */
+    const upcoming =
+      window.items.length > MAX_EVENTS ? window.items.slice(0, MAX_EVENTS) : window.items;
 
     // Which assets the device needs but does not yet have.
     //
@@ -277,7 +299,11 @@ export function registerDeviceApi(app: FastifyInstance, options: DeviceApiOption
     // that field we cannot tell a fresh device from a fully-cached one, so
     // the manifest stays empty only when the device explicitly reports its
     // cache contents.
-    const required = new Set(upcoming.map((item) => item.asset));
+    //
+    // Only the events that are still to come matter here: an event that
+    // has passed is one the frame has already dealt with.
+    const wanted = window.items.filter((item) => item.at > now - EVENT_GRACE_MS);
+    const required = new Set(wanted.map((item) => item.asset));
     const cached = new Set(body.cached_assets ?? []);
     const assetManifest: SyncResponse["assets"] = {};
 
