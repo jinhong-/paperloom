@@ -822,14 +822,23 @@ test("the plan grows rather than being replaced", async (t) => {
     assert.ok(secondTimes.includes(at), `the event at ${at} must still be there`);
   }
 
-  /* And the plan has grown, so that it reaches further than it did. */
-  assert.ok(
-    second.items.length > first.items.length,
-    "the plan must be extended with more events",
-  );
+  /* And the plan has grown, so that it reaches further than it did.
+   *
+   * The plan grows by reaching further, not by holding more events. The
+   * events that have long since passed are dropped, because the frame
+   * knows from its own memory which ones it has already shown, so a plan
+   * that has been extended can hold fewer events than the one before it
+   * and still reach much further. */
   assert.ok(
     second.items[second.items.length - 1]!.at > first.items[first.items.length - 1]!.at,
-    "the new events must come after the old ones",
+    "the plan must reach further than it did",
+  );
+
+  /* And the events that are still to come are all there, with their own
+   * times, and the new ones follow on after them. */
+  assert.ok(
+    secondTimes.length > firstTimes.length,
+    "the plan must hold more of the events that are still to come",
   );
 });
 
