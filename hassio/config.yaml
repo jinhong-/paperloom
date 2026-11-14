@@ -1,6 +1,6 @@
 name: Paperloom
 slug: paperloom
-version: "0.1.0"
+version: "0.1.0" # x-release-please-version
 description: Self-hosted server for Paperloom e-paper photo frames
 url: https://github.com/jinhong-/paperloom
 startup: application

@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+    tags:
+      - "v*"
     paths:
       - "server/**"
       - "hassio/**"
@@ -29,6 +31,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -38,6 +42,16 @@ jobs:
 
       - name: Generate release tree
         run: bash .github/scripts/build-hassio-release.sh "$RUNNER_TEMP/hassio-release"
+
+      - name: Verify release version
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version:[[:space:]]*"\{0,1\}\([0-9][^"#]*\)"\{0,1\}[[:space:]]*.*/\1/p' "$RUNNER_TEMP/hassio-release/paperloom/config.yaml" | tr -d '[:space:]')"
+          if [ -z "$version" ]; then
+            echo "Could not read the add-on version" >&2
+            exit 1
+          fi
+          echo "Preparing Paperloom $version"
 
       - name: Build and verify image
         uses: docker/build-push-action@v6
@@ -77,6 +91,15 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git commit -q -m "chore: regenerate Home Assistant release tree"
-          git push --force \
-            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
-            "HEAD:refs/heads/${RELEASE_BRANCH}"
+
+          remote="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git ls-remote --exit-code --heads "$remote" "$RELEASE_BRANCH" >/dev/null 2>&1; then
+            current="$(git ls-remote "$remote" "refs/heads/$RELEASE_BRANCH" | cut -f1)"
+            new="$(git rev-parse HEAD)"
+            if [ "$current" = "$new" ]; then
+              echo "The Home Assistant release branch is already current."
+              exit 0
+            fi
+          fi
+
+          git push --force "$remote" "HEAD:refs/heads/${RELEASE_BRANCH}"
