@@ -112,9 +112,14 @@ npm install
 npm run build
 ```
 
-Open the server in a browser, create an account, then create a gallery and
-drop some photos into it. The photos are converted to the panel's colours
-as they are uploaded, so what you see in the gallery is what the frame will
+Open the server in a browser. A fresh server has no owner, so it opens
+the setup page, which makes the first account. That account owns the
+frames. Everybody else is invited from the People page, because only the
+first account may be made without an invitation.
+
+Then create a gallery and drop some photos into it. The photos are
+converted to the panel's colours as they are uploaded, so what you see in
+the gallery is what the frame will
 show.
 
 ### Home Assistant
