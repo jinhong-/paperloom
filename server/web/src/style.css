@@ -219,6 +219,23 @@ label {
   margin-bottom: 6px;
 }
 
+/* A label with a box beside it.
+ *
+ * A checkbox with its label beside it, rather than above it, so that the
+ * two read as one thing. The label is a block by default, which would
+ * put it on its own line, so it is told to sit beside the box. */
+label.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+label.check input {
+  width: auto;
+  margin: 0;
+}
+
 .field {
   margin-bottom: 16px;
 }

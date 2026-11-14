@@ -134,6 +134,21 @@ function toClock(minute: number): string {
 }
 
 /**
+ * The hours a rule covers, as they are shown.
+ *
+ * A rule that covers the whole day says so, rather than naming the
+ * middle of the night twice.
+ */
+function describeRuleHours(rule: GalleryScheduleRule): string {
+  const wholeDay =
+    rule.start_minute === 0 &&
+    rule.end_minute === 1440 &&
+    rule.days === 127;
+  if (wholeDay) return "all day";
+  return `${toClock(rule.start_minute)} – ${toClock(rule.end_minute)}`;
+}
+
+/**
  * Create a gallery.
  */
 async function createGallery(): Promise<void> {
@@ -413,7 +428,7 @@ onMounted(async () => {
             style="padding: 8px 0; border-bottom: 1px solid var(--line)"
           >
             <div class="grow">
-              <strong>{{ toClock(rule.start_minute) }} – {{ toClock(rule.end_minute) }}</strong>
+              <strong>{{ describeRuleHours(rule) }}</strong>
               <div class="small muted">
                 <template v-if="rule.min_interval === null && rule.max_interval === null">
                   nothing is shown
@@ -441,7 +456,7 @@ onMounted(async () => {
               </div>
             </div>
 
-            <label class="small" style="display: flex; gap: 8px; align-items: center">
+            <label class="check small">
               <input v-model="ruleSilent" type="checkbox" />
               Nothing is shown during these hours
             </label>
