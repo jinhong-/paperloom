@@ -74,21 +74,33 @@ export class PinnedPhotoService {
   }
 
   /**
-   * Pin a picture to the next check-in of every frame showing a gallery.
+   * Pin a picture to a frame, after whatever is already pinned.
    *
-   * Returns the pins that were made, so that the caller can say how many
-   * frames the picture is going to appear on.
+   * The pictures are a queue. Each one takes the place after the last in
+   * the queue, and is shown at the check-in after that, so that the
+   * pictures arrive in the order they were sent rather than replacing one
+   * another.
+   *
+   * @return the pins that were made, so that the caller can say how many
+   *         frames the picture is going to appear on.
    */
   pinForGallery(galleryId: number, photoId: number, now: number): PinnedPhoto[] {
     const { db } = this.options;
     const pins: PinnedPhoto[] = [];
 
     for (const frame of this.framesFor(galleryId)) {
-      const at = this.nextSyncFor(frame.id, now);
+      /* The moment this picture is for is the check-in after the last one
+       * already in the queue, so that the pictures come out in order. */
+      const last = db
+        .prepare(
+          `SELECT at FROM pinned_photos
+           WHERE device_id = ? AND shown = 0
+           ORDER BY at DESC LIMIT 1`,
+        )
+        .get(frame.id) as { at: number } | undefined;
 
-      /* A frame holds one picture at a time, so a new one replaces
-       * whatever was pinned before. */
-      db.prepare("DELETE FROM pinned_photos WHERE device_id = ?").run(frame.id);
+      const from = last !== undefined ? last.at : now;
+      const at = this.nextSyncAfter(frame.id, from);
 
       const result = db
         .prepare(
@@ -109,6 +121,21 @@ export class PinnedPhotoService {
   }
 
   /**
+   * The next check-in at or after a moment.
+   *
+   * The check-in is worked out from the frame's own policy and rules. The
+   * moment asked about is the last moment in the queue, so that the next
+   * picture is shown at the check-in after it.
+   */
+  private nextSyncAfter(deviceId: number, from: number): number {
+    const next = this.options.schedules.nextCheckIn(deviceId, from);
+    /* The check-in may be the very moment asked about, which would put
+     * two pictures in the same instant. It is moved on by a second so
+     * that they are separate. */
+    return next <= from ? from + 1000 : next;
+  }
+
+  /**
    * The pins for a frame that are due at or before a moment.
    *
    * These are the pictures the frame is to be shown.
@@ -121,6 +148,34 @@ export class PinnedPhotoService {
          ORDER BY at`,
       )
       .all(deviceId, at) as Array<{
+      id: number;
+      device_id: number;
+      photo_id: number;
+      at: number;
+      shown: number;
+    }>;
+    return rows.map((row) => ({
+      id: row.id,
+      device_id: row.device_id,
+      photo_id: row.photo_id,
+      at: row.at,
+      shown: row.shown === 1,
+    }));
+  }
+
+  /**
+   * The pins for a frame that are waiting to be shown, in order.
+   *
+   * These are the pictures the frame is about to be shown.
+   */
+  pendingFor(deviceId: number): PinnedPhoto[] {
+    const rows = this.options.db
+      .prepare(
+        `SELECT id, device_id, photo_id, at, shown FROM pinned_photos
+         WHERE device_id = ? AND shown = 0
+         ORDER BY at`,
+      )
+      .all(deviceId) as Array<{
       id: number;
       device_id: number;
       photo_id: number;

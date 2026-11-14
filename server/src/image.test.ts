@@ -95,23 +95,26 @@ test("dynamic range compression maps pure white to the panel white point", () =>
 });
 
 test("dynamic range compression maps the source range onto the panel range", () => {
-  // The panel's white point is below 1.0, so a source white is pulled down
-  // to match what the panel can actually show.
-  const palette = { ...DEFAULT_PALETTE, whiteY: 0.78 };
+  // The panel's white point is below full white, so a source white is
+  // pulled down to match what the panel can actually show.
+  //
+  // The panel's black and white are held as lightnesses, which is the
+  // measure the range is moved in, so that the picture keeps its colours.
+  const palette = { ...DEFAULT_PALETTE, whiteY: 33 };
   const rgb = Buffer.from([255, 255, 255]);
   const compressed = compressDynamicRange(rgb, palette);
   assert.ok(compressed[0]! < 255, "pure white must be pulled down to the panel's white point");
-  assert.ok(compressed[0]! > 200, "but it must stay bright");
+  assert.ok(compressed[0]! > 30, "but it must stay bright");
 });
 
 test("dynamic range compression lifts shadows off the panel's black point", () => {
   // A panel whose black point is above zero renders a pure-black pixel as
   // washed-out grey, so the compression must raise it to the black point.
-  const palette = { ...DEFAULT_PALETTE, blackY: 0.05 };
+  const palette = { ...DEFAULT_PALETTE, blackY: 27 };
   const rgb = Buffer.from([0, 0, 0]);
   const compressed = compressDynamicRange(rgb, palette);
   assert.ok(compressed[0]! > 0, "pure black must be raised to the panel's black point");
-  // 0.05 linear is around sRGB 63, which is still clearly a dark tone.
+  // A lightness of 27 is around sRGB 63, which is still clearly a dark tone.
   assert.ok(compressed[0]! <= 70, "but it must stay dark");
 });
 

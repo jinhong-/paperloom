@@ -524,4 +524,106 @@ CREATE INDEX idx_held_photos_telegram ON held_photos(telegram_id);
 DROP TABLE IF EXISTS telegram_chats;
 `,
   },
+  {
+    id: "0013_pinned_queue",
+    sql: `
+-- The pins become a queue.
+--
+-- A frame held at most one pinned picture, so a second picture sent
+-- replaced the first and only the last was ever shown. The pictures you
+-- send are meant to be seen, in the order you sent them, so each one now
+-- takes the place after the last in the queue.
+--
+-- The row that is first in the queue is the one the frame shows next.
+CREATE TABLE pinned_photos_new (
+  id            INTEGER PRIMARY KEY,
+  -- The frame the picture is pinned to.
+  device_id     INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  -- The picture to show.
+  photo_id      INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+  -- The moment the picture is to be shown, in epoch milliseconds.
+  at            INTEGER NOT NULL,
+  -- Whether the picture has been shown yet.
+  shown         INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  -- A picture is pinned to one frame at a time.
+  UNIQUE (photo_id, device_id)
+);
+
+INSERT INTO pinned_photos_new (id, device_id, photo_id, at, shown, created_at, updated_at)
+  SELECT id, device_id, photo_id, at, shown, created_at, updated_at
+  FROM pinned_photos;
+
+DROP TABLE pinned_photos;
+ALTER TABLE pinned_photos_new RENAME TO pinned_photos;
+
+CREATE INDEX idx_pinned_photos_device ON pinned_photos(device_id);
+CREATE INDEX idx_pinned_photos_at ON pinned_photos(at);
+`,
+  },
+  {
+    id: "0014_plan_handover",
+    sql: `
+-- The plan a frame is following, and when it changes.
+--
+-- A plan is not thrown away when the gallery it shows changes. The frame
+-- is following a plan, and it must be given the same plan until it is
+-- ready to take a new one, or the two fall out of step: the frame shows a
+-- picture at a time the server does not have, and the times in the
+-- management page are not the times the frame is working to.
+--
+-- The plan is changed at the frame's next check-in, which is the moment
+-- the frame is certain to be in touch. Until then the frame is given the
+-- plan it is already following.
+--
+-- The column says when the plan is to change. It is null while the plan
+-- is current, and holds the moment the change is to take effect once the
+-- gallery has changed.
+ALTER TABLE schedules ADD COLUMN handover_at INTEGER;
+`,
+  },
+  {
+    id: "0015_gallery_schedule",
+    sql: `
+-- How a gallery's pictures are prepared for the panel.
+--
+-- The reference project has five ways of preparing a picture, and the
+-- difference between them is what the picture looks like. The gallery
+-- chooses one, and every picture in it is prepared that way.
+ALTER TABLE galleries ADD COLUMN tone_preset TEXT NOT NULL DEFAULT 'balanced';
+
+-- When a gallery changes, and how often.
+--
+-- A gallery does not have to change its pictures at the same rate all
+-- day. The rule says which days it applies to, the time of day it covers,
+-- and how often the picture changes during that time. A rule with no
+-- interval at all makes the gallery still for that time.
+--
+-- The rules are per gallery, because they are about the pictures. The
+-- check-in rules are per frame, because they are about the radio.
+CREATE TABLE gallery_schedule_rules (
+  id            INTEGER PRIMARY KEY,
+  -- The gallery the rule is for.
+  gallery_id    INTEGER NOT NULL REFERENCES galleries(id) ON DELETE CASCADE,
+  -- Bit mask of the days of the week the rule applies to.
+  days          INTEGER NOT NULL DEFAULT 127,
+  -- Minutes from local midnight.
+  start_minute  INTEGER NOT NULL DEFAULT 0,
+  end_minute    INTEGER NOT NULL DEFAULT 1440,
+  -- The smallest gap between two pictures during this time, in seconds.
+  --
+  -- The gallery's own interval is used when this is null.
+  min_interval  INTEGER,
+  -- The largest gap between two pictures during this time, in seconds.
+  max_interval  INTEGER,
+  -- Lower numbers win when several rules cover the same moment.
+  priority      INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX idx_gallery_schedule_rules_gallery ON gallery_schedule_rules(gallery_id);
+`,
+  },
 ];

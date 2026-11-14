@@ -227,12 +227,16 @@ test("a device can enrol, be claimed, sync and download its assets", async (t) =
     assert.ok(index <= 6 && index !== 4, `invalid colour index ${index}`);
   }
 
-  // A solid red image must dither to mostly red.
+  // A red picture must dither to mostly red.
   //
   // Pure red (255,0,0) is not one of the palette's exact colours, so error
   // diffusion has work to do: it renders a coarse checkerboard of red and
   // white with a few other colours at the edges. That is the expected
   // behaviour and matches the reference implementation exactly.
+  //
+  // The picture is a small square, and it is fitted inside the panel rather
+  // than cropped to fill it, so the panel is red in the middle and the
+  // panel's black around it.
   const counts = new Map<number, number>();
   for (const index of indices) {
     counts.set(index, (counts.get(index) ?? 0) + 1);
@@ -240,8 +244,12 @@ test("a device can enrol, be claimed, sync and download its assets", async (t) =
   const redPixels = counts.get(3) ?? 0;
   const total = indices.length;
   assert.ok(
-    redPixels / total > 0.7,
+    redPixels / total > 0.5,
     `expected mostly red pixels, got ${((redPixels / total) * 100).toFixed(1)}%`,
+  );
+  assert.ok(
+    (counts.get(0) ?? 0) / total > 0.1,
+    "the space around the picture must be the panel's black",
   );
   assert.equal(counts.get(4) ?? 0, 0, "the reserved colour code 4 must never appear");
 

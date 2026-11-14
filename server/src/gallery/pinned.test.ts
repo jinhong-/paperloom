@@ -234,7 +234,7 @@ test("the pin is in the future", async () => {
   assert.ok(pin!.at > now, "the pin must be in the future");
 });
 
-test("a newer picture replaces the one pinned before", async () => {
+test("a newer picture queues behind the one pinned before", async () => {
   const world = await makeWorld();
 
   const first = await world.photos.addPhoto(world.galleryId, "one.png", await image(220, 30, 30), {
@@ -247,11 +247,60 @@ test("a newer picture replaces the one pinned before", async () => {
   const pins = world.db
     .prepare("SELECT COUNT(*) AS n FROM pinned_photos WHERE device_id = ?")
     .get(world.deviceId) as { n: number };
-  assert.equal(pins.n, 1, "a frame holds one pinned picture at a time");
+  assert.equal(pins.n, 2, "both pictures must be pinned, one after the other");
 
-  const pin = world.pins.pinFor(world.deviceId);
-  assert.equal(pin!.photo_id, second.id, "the newer picture must be the pinned one");
-  assert.notEqual(pin!.photo_id, first.id);
+  /* The first picture is shown first, and the second after it. */
+  const queued = world.pins.pendingFor(world.deviceId);
+  assert.equal(queued.length, 2, "both pictures must be waiting");
+  assert.equal(queued[0]!.photo_id, first.id, "the first picture must be first");
+  assert.equal(queued[1]!.photo_id, second.id, "the second picture must be second");
+  assert.ok(
+    queued[1]!.at > queued[0]!.at,
+    "the second picture must be shown after the first",
+  );
+});
+
+test("every picture in the queue is in the plan", () => {
+  const candidates: Candidate[] = [
+    { photoId: 2, contentHash: "ordinary", weight: 1, belongsTo: 1 },
+  ];
+  const galleries: GalleryPolicy[] = [
+    { galleryId: 1, rotationMode: "random", minInterval: 900, maxInterval: 900 },
+  ];
+  const policy = {
+    syncInterval: 3600,
+    lookahead: 10800,
+    quietStart: null,
+    quietEnd: null,
+    timezone: "UTC",
+  };
+
+  const windowStart = 1_700_000_000_000;
+
+  /* Two pictures are waiting, each for a moment of its own. Both must be
+   * in the plan, so that the frame is shown them one after the other. */
+  const first = windowStart + 2 * 900 * 1000;
+  const second = windowStart + 5 * 900 * 1000;
+
+  const events = materializeSchedule({
+    deviceId: "dev-1",
+    windowStart,
+    windowEnd: windowStart + 10800 * 1000,
+    candidates,
+    galleries,
+    policy,
+    pinned: [
+      { at: first, contentHash: "first" },
+      { at: second, contentHash: "second" },
+    ],
+  });
+
+  const firsts = events.filter((e) => e.asset === "first");
+  const seconds = events.filter((e) => e.asset === "second");
+  assert.equal(firsts.length, 1, "the first picture must be shown exactly once");
+  assert.equal(seconds.length, 1, "the second picture must be shown exactly once");
+  assert.equal(firsts[0]!.at, first, "the first picture must be shown when it was pinned for");
+  assert.equal(seconds[0]!.at, second, "the second picture must be shown when it was pinned for");
 });
 
 test("every frame showing the gallery gets the picture pinned", async () => {
@@ -360,7 +409,7 @@ test("the pinned picture takes the place of whatever would have been shown", () 
     candidates,
     galleries,
     policy,
-    pinned: { at: pinAt, contentHash: "pinned" },
+    pinned: [{ at: pinAt, contentHash: "pinned" }],
   });
 
   const pinnedEvents = withPin.filter((e) => e.asset === "pinned");
@@ -414,7 +463,7 @@ test("a plan that already has the pinned moment is not given it twice", () => {
     candidates,
     galleries,
     policy,
-    pinned: { at: pinAt, contentHash: "pinned" },
+    pinned: [{ at: pinAt, contentHash: "pinned" }],
   });
 
   const atPin = events.filter((e) => e.at === pinAt);
@@ -445,7 +494,7 @@ test("a pinned picture outside the window is not shown in it", () => {  const ca
     galleries,
     policy,
     // Well beyond the end of the window.
-    pinned: { at: windowStart + 10 * 10800 * 1000, contentHash: "pinned" },
+    pinned: [{ at: windowStart + 10 * 10800 * 1000, contentHash: "pinned" }],
   });
 
   assert.ok(

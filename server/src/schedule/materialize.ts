@@ -35,6 +35,9 @@
 
 import { createHash } from "node:crypto";
 
+import { galleryIntervalAt, type GalleryRule } from "./galleryRules.js";
+import { localDayAndMinute } from "./rules.js";
+
 /** A photo eligible for scheduling. */
 export interface Candidate {
   /** Stable identifier of the source photo. */
@@ -53,6 +56,15 @@ export interface GalleryPolicy {
   readonly rotationMode: "random" | "sequential";
   readonly minInterval: number;
   readonly maxInterval: number;
+  /**
+   * The rules that say when this gallery changes, and how often.
+   *
+   * A gallery does not have to change at the same rate all day. A rule
+   * covers some days and some hours, and gives the gap between two
+   * pictures during that time. A rule with no interval at all means the
+   * gallery is still for that time.
+   */
+  readonly rules?: readonly GalleryRule[];
 }
 
 /** A device's sync and quiet-hours policy. */
@@ -253,14 +265,14 @@ export interface MaterializeInput {
   /** The most recently displayed photo id, to avoid an immediate repeat. */
   readonly lastPhotoId?: number;
   /**
-   * A picture pinned to a particular moment.
+   * The pictures pinned to particular moments.
    *
-   * A picture that arrived from a chat is pinned to the frame's next
-   * check-in, so that it is shown on the next wake rather than waiting
-   * for its turn in the rotation. It takes the place of whatever would
-   * have been shown at that moment.
+   * A picture that arrived from a chat is pinned to a moment of its own,
+   * so that it is shown on the next wake rather than waiting for its turn
+   * in the rotation. The pictures are a queue: each one is shown after the
+   * one before it.
    */
-  readonly pinned?: { readonly at: number; readonly contentHash: string };
+  readonly pinned?: ReadonlyArray<{ readonly at: number; readonly contentHash: string }>;
 }
 
 /**
@@ -318,46 +330,66 @@ export function materializeSchedule(input: MaterializeInput): DisplayEvent[] {
    * It does not take the place of a slot in the rotation: the pin is at
    * a moment of its own, and the frame is asleep until then. Taking a
    * slot instead would push the picture as far as a whole interval
-   * later, which is the very delay the pin exists to avoid. */
-  const pinned = input.pinned;
-
-  /* The pin is an event of its own, and it may fall between two ordinary
-   * slots, so it is placed at its own moment.
+   * later, which is the very delay the pin exists to avoid.
    *
-   * A plan that already has an event at that moment keeps it: the pin was
-   * made for that moment, and the event already there is the one that was
-   * planned for it. Adding the pin as well would leave the frame changing
-   * twice at the same instant. */
-  const pinnedAt = pinned?.at;
-  const pinnedAlreadyThere =
-    pinnedAt !== undefined && existingByAt.has(pinnedAt);
+   * The pins are a queue, and each one is placed at its own moment. A pin
+   * that falls outside the window is left out: the frame will be given it
+   * when the window reaches it. */
+  const pinned = input.pinned ?? [];
 
-  if (
-    pinned !== undefined &&
-    !pinnedAlreadyThere &&
-    pinned.at >= windowStart &&
-    pinned.at < windowEnd
-  ) {
-    events.push({ at: pinned.at, asset: pinned.contentHash });
+  for (const pin of pinned) {
+    /* A plan that already has an event at that moment keeps it: the pin
+     * was made for that moment, and the event already there is the one
+     * that was planned for it. Adding the pin as well would leave the
+     * frame changing twice at the same instant. */
+    if (existingByAt.has(pin.at)) {
+      continue;
+    }
+    if (pin.at >= windowStart && pin.at < windowEnd) {
+      events.push({ at: pin.at, asset: pin.contentHash });
+    }
   }
 
   // Guard against a pathological policy producing an unbounded loop.
   const maxEvents = 10_000;
 
-  while (cursor < windowEnd && events.length < maxEvents) {
+  /* The loop also counts its turns, not only its events.
+   *
+   * A gallery that is still for a time produces no events, so the event
+   * count alone does not bound the loop: the cursor advances a step at a
+   * time, and a gallery with a very short interval would need a great
+   * many of them to cross the window. Counting the turns puts a bound on
+   * the work done, whatever the policy says. */
+  const maxTurns = 100_000;
+  let turns = 0;
+
+  while (cursor < windowEnd && events.length < maxEvents && turns < maxTurns) {
+    turns += 1;
     const gallery = galleries[rng.below(galleries.length)]!;
 
     /* Choose the interval for the *next* display, so the first event lands
      * at the window start and subsequent ones are spaced out.
      *
-     * The interval is the gallery's own: how often the owner wants the
-     * picture to change. It has nothing to do with how often the frame
-     * checks in with the server. The frame wakes for whichever comes
-     * first, so a picture that falls between two check-ins is still shown
-     * on time: the frame wakes for it, shows it, and goes back to sleep
-     * until the check-in. */
-    const span = Math.max(0, gallery.maxInterval - gallery.minInterval);
-    const intervalSeconds = gallery.minInterval + (span > 0 ? rng.below(span + 1) : 0);
+     * The gallery's own rules say how often it changes at this moment, so
+     * a gallery can change slowly overnight and quickly in the morning. */
+    const moment = localDayAndMinute(cursor, policy.timezone);
+    const gap = galleryIntervalAt(
+      gallery.rules ?? [],
+      gallery.minInterval,
+      gallery.maxInterval,
+      moment.day,
+      moment.minute,
+    );
+
+    /* A gallery that is still for this time shows nothing, so there is no
+     * point in looking for a photo to show. */
+    if (gap.max <= 0) {
+      cursor += Math.max(1, gallery.minInterval) * 1000;
+      continue;
+    }
+
+    const intervalSeconds =
+      gap.min + (gap.max > gap.min ? rng.below(gap.max - gap.min + 1) : 0);
 
     /* An event the plan already has keeps its photo, so that the replay
      * stays in step with the plan and the events that follow carry on

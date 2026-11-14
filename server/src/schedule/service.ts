@@ -21,6 +21,7 @@ import {
   type DisplayEvent,
   type GalleryPolicy,
 } from "./materialize.js";
+import type { GalleryRule } from "./galleryRules.js";
 import {
   localDayAndMinute,
   resolveInterval,
@@ -52,18 +53,28 @@ export class ScheduleService {
   ) {}
 
   /**
-   * Discard a device's materialised schedule windows.
+   * Note that a device's plan is to change.
    *
-   * A window is materialised once and then reused, so that a device that
-   * retries a sync is given the same schedule it was given the first
-   * time. That reuse is only correct while the inputs are unchanged.
+   * A plan is not thrown away when the gallery it shows changes. The frame
+   * is following a plan, and it has to be given the same plan until it is
+   * ready to take a new one. Throwing the plan away leaves the frame and
+   * the server out of step: the frame carries on with a plan the server
+   * no longer has, and when it does check in it is given a plan with
+   * different times, so pictures are skipped or shown twice.
    *
-   * When the galleries assigned to a device change, or when its policy
-   * changes, the stored windows no longer describe what the device should
-   * be shown, so they are discarded and rebuilt on the next sync.
+   * The plan changes at the frame's next check-in, which is the moment the
+   * frame is certain to be in touch. Until then the frame is given the
+   * plan it is already following.
    */
-  invalidate(deviceId: number): void {
-    this.db.prepare("DELETE FROM schedules WHERE device_id = ?").run(deviceId);
+  invalidate(deviceId: number, now: number): void {
+    const handoverAt = this.nextCheckIn(deviceId, now);
+    this.db
+      .prepare(
+        `UPDATE schedules
+         SET handover_at = COALESCE(handover_at, ?)
+         WHERE device_id = ?`,
+      )
+      .run(handoverAt, deviceId);
   }
 
   /**
@@ -123,13 +134,144 @@ export class ScheduleService {
     const nextCheckIn = this.nextCheckIn(deviceId, now);
 
     const current = this.currentPlan(deviceId);
-    if (current && current.windowEnd >= nextCheckIn) {
-      return { revision: current.revision, items: current.items };
+    if (current) {
+      /* The plan is handed over when the moment for it has arrived. Until
+       * then the frame is given the plan it is already following, so that
+       * the two are always working to the same plan.
+       *
+       * A plan that is due to be handed over is rebuilt from scratch,
+       * because the gallery it shows has changed and the old plan no
+       * longer says what should be shown. */
+      const handoverDue = current.handoverAt !== null && current.handoverAt <= now;
+
+      /* A plan with nothing in it is not worth keeping. A frame that has
+       * been given its first gallery would otherwise show nothing until its
+       * next check-in, which is up to an hour overnight. */
+      const empty = current.items.length === 0;
+
+      if (!handoverDue && !empty && current.windowEnd >= nextCheckIn) {
+        return { revision: current.revision, items: current.items };
+      }
+
+      if (handoverDue || empty) {
+        /* The gallery changed and the frame has now come back for it, so
+         * the plan is built afresh from this moment. */
+        return this.buildPlanForDevice(deviceId, now, nextCheckIn, span, policy, device);
+      }
     }
 
     /* The plan does not reach far enough, so it is extended. The events
      * already in it keep their times, and the new ones follow on. */
     return this.extendPlanForDevice(deviceId, current, now, nextCheckIn, span, policy, device);
+  }
+
+  /**
+  /**
+   * Add a pinned picture to a frame's plan.
+   *
+   * The picture has to reach the frame now, because the frame's next wake
+   * is the moment it is pinned to: there is no later check-in to wait for.
+   *
+   * The plan is extended rather than handed over, so that the times
+   * already in it do not move. The picture is put in at its own moment,
+   * and the plan reaches far enough to cover it.
+   */
+  addPinnedEvent(deviceId: number, at: number, photoId: number): void {
+    const device = this.db
+      .prepare("SELECT id, displayed_asset, timezone FROM devices WHERE id = ?")
+      .get(deviceId) as
+      | { id: number; displayed_asset: string | null; timezone: string }
+      | undefined;
+    if (!device) return;
+
+    const policy = this.policyFor(deviceId);
+    const span = this.coverageSpan(deviceId, policy);
+    const now = Date.now();
+    const nextCheckIn = this.nextCheckIn(deviceId, now);
+    const current = this.currentPlan(deviceId);
+
+    /* The plan has to reach the moment the picture is pinned to. */
+    const windowEnd = Math.max(
+      current?.windowEnd ?? 0,
+      at + 1000,
+      nextCheckIn + span * 1000,
+    );
+
+    this.extendPlanForDevice(
+      deviceId,
+      current,
+      now,
+      nextCheckIn,
+      span,
+      policy,
+      device,
+      true,
+      windowEnd,
+    );
+  }
+
+  /**
+   * The plan a frame is following, and what it will become.
+   *
+   * The plan the frame is following now is what it is actually working to.
+   * When the gallery has changed, the plan is handed over at the frame's
+   * next check-in, and the projected plan is what it will be then.
+   *
+   * The two are shown together, so that the owner can see what a change
+   * is going to do before it happens, and so that it is clear that the
+   * frame is still working to the old one.
+   */
+  planWithProjection(deviceId: number, now: number): {
+    current: ScheduleWindow;
+    projected: ScheduleWindow | null;
+    handoverAt: number | null;
+  } {
+    const device = this.db
+      .prepare("SELECT id, displayed_asset, timezone FROM devices WHERE id = ?")
+      .get(deviceId) as
+      | { id: number; displayed_asset: string | null; timezone: string }
+      | undefined;
+    if (!device) throw new Error(`unknown device ${deviceId}`);
+
+    const current = this.currentPlan(deviceId);
+    if (!current) {
+      const built = this.getForDevice(deviceId, now);
+      return { current: built, projected: null, handoverAt: null };
+    }
+
+    if (current.handoverAt === null) {
+      return {
+        current: { revision: current.revision, items: current.items },
+        projected: null,
+        handoverAt: null,
+      };
+    }
+
+    /* The plan is to change. The projected plan is what it will be when
+     * it does, worked out as though the frame were checking in at that
+     * moment. */
+    const policy = this.policyFor(deviceId);
+    const span = this.coverageSpan(deviceId, policy);
+    const handoverAt = current.handoverAt;
+    const projectedNextCheckIn = this.nextCheckIn(deviceId, handoverAt);
+
+    const projected = this.extendPlanForDevice(
+      deviceId,
+      null,
+      handoverAt,
+      projectedNextCheckIn,
+      span,
+      policy,
+      device,
+      /* The projected plan is only worked out, not kept. */
+      false,
+    );
+
+    return {
+      current: { revision: current.revision, items: current.items },
+      projected: { revision: projected.revision, items: projected.items },
+      handoverAt,
+    };
   }
 
   /**
@@ -143,18 +285,25 @@ export class ScheduleService {
     revision: string;
     windowStart: number;
     windowEnd: number;
+    handoverAt: number | null;
     items: DisplayEvent[];
   } | null {
     const row = this.db
       .prepare(
-        `SELECT revision, window_start, window_end, events_json
+        `SELECT revision, window_start, window_end, handover_at, events_json
          FROM schedules
          WHERE device_id = ?
          ORDER BY window_start DESC
          LIMIT 1`,
       )
       .get(deviceId) as
-      | { revision: string; window_start: string; window_end: string; events_json: string }
+      | {
+          revision: string;
+          window_start: string;
+          window_end: string;
+          handover_at: number | null;
+          events_json: string;
+        }
       | undefined;
 
     if (!row) return null;
@@ -167,6 +316,7 @@ export class ScheduleService {
       revision: row.revision,
       windowStart,
       windowEnd,
+      handoverAt: row.handover_at,
       items: JSON.parse(row.events_json) as DisplayEvent[],
     };
   }
@@ -233,6 +383,25 @@ export class ScheduleService {
   }
 
   /**
+   * Build a plan for a device from scratch.
+   *
+   * This is used when the gallery has changed and the frame has come back
+   * for it. The old plan said what should be shown before the change, and
+   * the frame has been working to it, so the new plan starts afresh from
+   * the moment the frame is in touch.
+   */
+  private buildPlanForDevice(
+    deviceId: number,
+    now: number,
+    nextCheckIn: number,
+    span: number,
+    policy: DevicePolicy,
+    device: { displayed_asset: string | null; timezone: string },
+  ): ScheduleWindow {
+    return this.extendPlanForDevice(deviceId, null, now, nextCheckIn, span, policy, device);
+  }
+
+  /**
    * Build and persist the schedule window for a device.
    */
   private extendPlanForDevice(
@@ -241,6 +410,7 @@ export class ScheduleService {
       revision: string;
       windowStart: number;
       windowEnd: number;
+      handoverAt: number | null;
       items: DisplayEvent[];
     } | null,
     now: number,
@@ -248,6 +418,8 @@ export class ScheduleService {
     span: number,
     policy: DevicePolicy,
     device: { displayed_asset: string | null; timezone: string },
+    keep = true,
+    windowEndOverride?: number,
   ): ScheduleWindow {
     const galleries = this.galleriesFor(deviceId);
     const candidates = this.candidatesFor(deviceId);
@@ -283,6 +455,7 @@ export class ScheduleService {
     const windowEnd = Math.max(
       current?.windowEnd ?? 0,
       nextCheckIn + span * 1000,
+      windowEndOverride ?? 0,
     );
 
     /* A picture that arrived from a chat is pinned to this frame's next
@@ -324,9 +497,23 @@ export class ScheduleService {
 
     const revision = this.computeRevision(deviceId, windowStart, live);
 
+    /* A plan that is only being worked out is not kept: it is a projection
+     * of what the plan will be, and keeping it would throw away the plan
+     * the frame is following. */
+    if (!keep) {
+      return { revision, items: live };
+    }
+
     /* There is one plan for each frame, and it is replaced by the plan
      * that has just been extended. The events in it keep their times: the
-     * new ones are added after the old ones. */
+     * new ones are added after the old ones.
+     *
+     * A plan that is waiting to be handed over keeps waiting. The change
+     * to the gallery has not reached the frame yet, so the plan that is
+     * being built is still the one the frame is following, and it is still
+     * to be handed over at the moment that was set. */
+    const handoverAt = current?.handoverAt ?? null;
+
     this.db
       .prepare(
         `DELETE FROM schedules WHERE device_id = ?`,
@@ -335,8 +522,8 @@ export class ScheduleService {
 
     this.db
       .prepare(
-        `INSERT INTO schedules (device_id, revision, window_start, window_end, events_json)
-         VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO schedules (device_id, revision, window_start, window_end, events_json, handover_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
       )
       .run(
         deviceId,
@@ -344,6 +531,7 @@ export class ScheduleService {
         new Date(windowStart).toISOString(),
         new Date(windowEnd).toISOString(),
         JSON.stringify(live),
+        handoverAt,
       );
 
     return { revision, items: live };
@@ -532,6 +720,38 @@ export class ScheduleService {
       rotationMode: r.rotation_mode,
       minInterval: r.min_interval,
       maxInterval: r.max_interval,
+      rules: this.galleryRulesFor(r.id),
+    }));
+  }
+
+  /**
+   * The rules that say when a gallery changes its picture.
+   */
+  galleryRulesFor(galleryId: number): GalleryRule[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, days, start_minute, end_minute, min_interval, max_interval, priority
+         FROM gallery_schedule_rules WHERE gallery_id = ?
+         ORDER BY priority, id`,
+      )
+      .all(galleryId) as Array<{
+      id: number;
+      days: number;
+      start_minute: number;
+      end_minute: number;
+      min_interval: number | null;
+      max_interval: number | null;
+      priority: number;
+    }>;
+
+    return rows.map((r) => ({
+      id: r.id,
+      days: r.days,
+      startMinute: r.start_minute,
+      endMinute: r.end_minute,
+      minInterval: r.min_interval,
+      maxInterval: r.max_interval,
+      priority: r.priority,
     }));
   }
 
@@ -581,24 +801,27 @@ export class ScheduleService {
    * every other picture, so that a turned frame shows the pinned picture
    * the right way up.
    */
-  private pinnedFor(deviceId: number): { at: number; contentHash: string } | undefined {
+  private pinnedFor(deviceId: number): Array<{ at: number; contentHash: string }> {
     const rotation = this.rotationFor(deviceId);
 
-    const row = this.db
+    const rows = this.db
       .prepare(
         `SELECT pp.at, COALESCE(pa.content_hash, p.content_hash) AS content_hash
          FROM pinned_photos pp
          JOIN photos p ON p.id = pp.photo_id
          LEFT JOIN photo_assets pa ON pa.photo_id = pp.photo_id AND pa.rotation = ?
          WHERE pp.device_id = ? AND pp.shown = 0
-         LIMIT 1`,
+         ORDER BY pp.at`,
       )
-      .get(rotation, deviceId) as
-      | { at: number; content_hash: string | null }
-      | undefined;
+      .all(rotation, deviceId) as Array<{ at: number; content_hash: string | null }>;
 
-    if (!row || !row.content_hash) return undefined;
-    return { at: row.at, contentHash: row.content_hash };
+    const pins: Array<{ at: number; contentHash: string }> = [];
+    for (const row of rows) {
+      if (row.content_hash) {
+        pins.push({ at: row.at, contentHash: row.content_hash });
+      }
+    }
+    return pins;
   }
 
   /**

@@ -15,6 +15,7 @@ import type { Db } from "../db/index.js";
 import type { ScheduleService } from "../schedule/service.js";
 import { EVERY_DAY } from "../schedule/rules.js";
 import { isRotation } from "../panel.js";
+import { PRESETS } from "../tone.js";
 import { GalleryPhotoService } from "../gallery/photos.js";
 
 export interface ManagementOptions {
@@ -59,15 +60,49 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
   }
 
   /**
-   * Discard the materialised schedules of every device that shows a
-   * gallery.
+   * Note that the plans of every device that shows a gallery are to
+   * change.
    *
    * A gallery's contents and policy decide what its devices are shown and
-   * when, so a change to the gallery makes their existing schedule
-   * windows wrong.
+   * when, so a change to the gallery means their plans are out of date.
+   *
+   * The plans are not thrown away. They are changed at each frame's next
+   * check-in, so that the frame and the server keep working to the same
+   * plan until then.
    */
   function invalidateGallery(galleryId: number): void {
-    photos.invalidateGallery(galleryId);
+    photos.invalidateGallery(galleryId, Date.now());
+  }
+
+  /**
+   * Whether a rule about when a gallery changes makes sense.
+   *
+   * The days are a bit mask of the seven days of the week, and the times
+   * are minutes from midnight. A rule with no interval at all is the
+   * gallery being still for that time, which is allowed; a rule with one
+   * interval has to have a sensible one.
+   */
+  function validRule(body: {
+    days?: number;
+    start_minute?: number;
+    end_minute?: number;
+    min_interval?: number | null;
+    max_interval?: number | null;
+  }): boolean {
+    if (body.days !== undefined && (!Number.isInteger(body.days) || body.days < 0 || body.days > 127)) {
+      return false;
+    }
+    for (const key of ["start_minute", "end_minute"] as const) {
+      const value = body[key];
+      if (value === undefined) continue;
+      if (!Number.isInteger(value) || value < 0 || value > 1440) return false;
+    }
+    for (const key of ["min_interval", "max_interval"] as const) {
+      const value = body[key];
+      if (value === undefined || value === null) continue;
+      if (!Number.isFinite(value) || value < 60 || value > 604_800) return false;
+    }
+    return true;
   }
 
   // ---------------------------------------------------------------------
@@ -359,7 +394,7 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
     const galleries = db
       .prepare(
         `SELECT g.id, g.name, g.rotation_mode, g.min_interval, g.max_interval,
-                g.quiet_start, g.quiet_end, g.enabled,
+                g.quiet_start, g.quiet_end, g.enabled, g.tone_preset,
                 (SELECT COUNT(*) FROM photos p WHERE p.gallery_id = g.id) AS photo_count
          FROM galleries g
          WHERE g.user_id = ?
@@ -383,6 +418,18 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
     if (!body?.name) {
       await reply.code(400).send({ error: "name is required" });
       return;
+    }
+
+    /* The intervals have to be sensible: see the update route. */
+    for (const key of ["min_interval", "max_interval"] as const) {
+      const value = body[key];
+      if (value === undefined) continue;
+      if (!Number.isFinite(value) || value < 60 || value > 604_800) {
+        await reply.code(400).send({
+          error: `${key} must be between 60 seconds and a week`,
+        });
+        return;
+      }
     }
 
     const result = db
@@ -422,7 +469,31 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       quiet_start: number | null;
       quiet_end: number | null;
       enabled: boolean;
+      tone_preset: string;
     }>;
+
+    /* The way the pictures are prepared has to be one we know. */
+    if (body.tone_preset !== undefined && !PRESETS[body.tone_preset]) {
+      await reply.code(400).send({ error: "unknown way of preparing the pictures" });
+      return;
+    }
+
+    /* The intervals have to be sensible.
+     *
+     * A gallery that changes every second would fill a plan with tens of
+     * thousands of events, and the plan is sent to a frame over the
+     * network. A minute is the shortest gap that makes sense, and a week
+     * is longer than any gap anybody wants. */
+    for (const key of ["min_interval", "max_interval"] as const) {
+      const value = body[key];
+      if (value === undefined) continue;
+      if (!Number.isFinite(value) || value < 60 || value > 604_800) {
+        await reply.code(400).send({
+          error: `${key} must be between 60 seconds and a week`,
+        });
+        return;
+      }
+    }
 
     const fields: string[] = [];
     const values: unknown[] = [];
@@ -440,6 +511,183 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       ...values,
       Number(id),
     );
+
+    /* The way of preparing the pictures is the gallery's, so changing it
+     * changes every picture in the gallery. The pictures are rendered
+     * again from their originals, which takes a moment. */
+    if (body.tone_preset !== undefined) {
+      await photos.rerenderGallery(Number(id));
+    }
+
+    invalidateGallery(Number(id));
+
+    await reply.send({ status: "ok" });
+  });
+
+  // ---------------------------------------------------------------------
+  // When a gallery changes its picture
+  // ---------------------------------------------------------------------
+
+  /**
+   * The rules that say when a gallery changes its picture.
+   */
+  app.get(`${basePath}/galleries/:id/schedule-rules`, async (request, reply) => {
+    const userId = await requireUser(request, reply);
+    if (userId === null) return;
+
+    const { id } = request.params as { id: string };
+    const gallery = db
+      .prepare("SELECT id FROM galleries WHERE id = ? AND user_id = ?")
+      .get(Number(id), userId);
+    if (!gallery) {
+      await reply.code(404).send({ error: "unknown gallery" });
+      return;
+    }
+
+    const rules = schedules.galleryRulesFor(Number(id));
+    await reply.send(
+      rules.map((rule) => ({
+        id: rule.id,
+        days: rule.days,
+        start_minute: rule.startMinute,
+        end_minute: rule.endMinute,
+        min_interval: rule.minInterval,
+        max_interval: rule.maxInterval,
+        priority: rule.priority,
+      })),
+    );
+  });
+
+  /**
+   * Add a rule to a gallery.
+   */
+  app.post(`${basePath}/galleries/:id/schedule-rules`, async (request, reply) => {
+    const userId = await requireUser(request, reply);
+    if (userId === null) return;
+
+    const { id } = request.params as { id: string };
+    const gallery = db
+      .prepare("SELECT id FROM galleries WHERE id = ? AND user_id = ?")
+      .get(Number(id), userId);
+    if (!gallery) {
+      await reply.code(404).send({ error: "unknown gallery" });
+      return;
+    }
+
+    const body = request.body as {
+      days?: number;
+      start_minute?: number;
+      end_minute?: number;
+      min_interval?: number | null;
+      max_interval?: number | null;
+      priority?: number;
+    };
+
+    if (!validRule(body)) {
+      await reply.code(400).send({ error: "the rule does not make sense" });
+      return;
+    }
+
+    const result = db
+      .prepare(
+        `INSERT INTO gallery_schedule_rules
+           (gallery_id, days, start_minute, end_minute, min_interval, max_interval, priority)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        Number(id),
+        body.days ?? 127,
+        body.start_minute ?? 0,
+        body.end_minute ?? 1440,
+        body.min_interval ?? null,
+        body.max_interval ?? null,
+        body.priority ?? 0,
+      );
+
+    invalidateGallery(Number(id));
+
+    await reply.send({ status: "ok", id: Number(result.lastInsertRowid) });
+  });
+
+  /**
+   * Change a rule.
+   */
+  app.patch(`${basePath}/galleries/:id/schedule-rules/:ruleId`, async (request, reply) => {
+    const userId = await requireUser(request, reply);
+    if (userId === null) return;
+
+    const { id, ruleId } = request.params as { id: string; ruleId: string };
+    const gallery = db
+      .prepare("SELECT id FROM galleries WHERE id = ? AND user_id = ?")
+      .get(Number(id), userId);
+    if (!gallery) {
+      await reply.code(404).send({ error: "unknown gallery" });
+      return;
+    }
+
+    const body = request.body as {
+      days?: number;
+      start_minute?: number;
+      end_minute?: number;
+      min_interval?: number | null;
+      max_interval?: number | null;
+      priority?: number;
+    };
+
+    if (!validRule(body)) {
+      await reply.code(400).send({ error: "the rule does not make sense" });
+      return;
+    }
+
+    const fields: string[] = [];
+    const values: unknown[] = [];
+    for (const [key, value] of Object.entries(body)) {
+      if (value === undefined) continue;
+      fields.push(`${key} = ?`);
+      values.push(value);
+    }
+    if (fields.length > 0) {
+      const result = db
+        .prepare(
+          `UPDATE gallery_schedule_rules SET ${fields.join(", ")},
+             updated_at = datetime('now')
+           WHERE id = ? AND gallery_id = ?`,
+        )
+        .run(...values, Number(ruleId), Number(id));
+      if (result.changes === 0) {
+        await reply.code(404).send({ error: "unknown rule" });
+        return;
+      }
+    }
+
+    invalidateGallery(Number(id));
+
+    await reply.send({ status: "ok" });
+  });
+
+  /**
+   * Remove a rule.
+   */
+  app.delete(`${basePath}/galleries/:id/schedule-rules/:ruleId`, async (request, reply) => {
+    const userId = await requireUser(request, reply);
+    if (userId === null) return;
+
+    const { id, ruleId } = request.params as { id: string; ruleId: string };
+    const gallery = db
+      .prepare("SELECT id FROM galleries WHERE id = ? AND user_id = ?")
+      .get(Number(id), userId);
+    if (!gallery) {
+      await reply.code(404).send({ error: "unknown gallery" });
+      return;
+    }
+
+    const result = db
+      .prepare("DELETE FROM gallery_schedule_rules WHERE id = ? AND gallery_id = ?")
+      .run(Number(ruleId), Number(id));
+    if (result.changes === 0) {
+      await reply.code(404).send({ error: "unknown rule" });
+      return;
+    }
 
     invalidateGallery(Number(id));
 
@@ -707,7 +955,7 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
 
     /* The device's schedule changes with its galleries, so the windows
      * that were materialised from the old set are no longer right. */
-    schedules.invalidate(Number(id));
+    schedules.invalidate(Number(id), Date.now());
 
     await reply.send({ status: "ok" });
   });
@@ -730,7 +978,7 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       Number(galleryId),
     );
 
-    schedules.invalidate(Number(id));
+    schedules.invalidate(Number(id), Date.now());
 
     await reply.send({ status: "ok" });
   });
@@ -797,7 +1045,7 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       /* The policy decides the window boundaries and how far ahead the
        * schedule is built, so the materialised windows no longer describe
        * what the device should be shown. */
-      schedules.invalidate(Number(id));
+      schedules.invalidate(Number(id), Date.now());
     }
 
     await reply.send({ status: "ok" });
@@ -1061,14 +1309,26 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
     }
 
     const now = Date.now();
-    const window = schedules.getForDevice(Number(id), now);
+
+    /* The plan the frame is following, and the plan it will be following
+     * once the change has reached it.
+     *
+     * The frame is given the plan it is following until it checks in, and
+     * the change is put in at that moment. The projected plan is what it
+     * will be then, so that the owner can see what a change is going to do
+     * before it happens. */
+    const plans = schedules.planWithProjection(Number(id), now);
 
     /* Only the events that are still to come.
      *
      * The window is planned ahead of time, so it holds events the frame
      * has already shown. Those are of no interest to the owner: what they
      * want to see is what the frame is going to show next. */
-    const upcoming = window.items.filter((item) => item.at > now);
+    const upcoming = plans.current.items.filter((item) => item.at > now);
+    const projected =
+      plans.projected === null
+        ? null
+        : plans.projected.items.filter((item) => item.at > now);
 
     /* The photo behind each asset, so the owner sees which picture is
      * going to be shown rather than a hash. */
@@ -1080,9 +1340,8 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       .all() as Array<{ id: number; content_hash: string; filename: string }>;
     const photoByHash = new Map(photos.map((p) => [p.content_hash, p]));
 
-    await reply.send({
-      revision: window.revision,
-      items: upcoming.map((item) => {
+    const describe = (items: typeof plans.current.items) =>
+      items.map((item) => {
         const photo = photoByHash.get(item.asset);
         return {
           at: new Date(item.at).toISOString(),
@@ -1090,7 +1349,15 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
           filename: photo?.filename ?? null,
           photo_id: photo?.id ?? null,
         };
-      }),
+      });
+
+    await reply.send({
+      revision: plans.current.revision,
+      items: describe(upcoming),
+      /* When the plan changes, if it is about to. */
+      handover_at: plans.handoverAt === null ? null : new Date(plans.handoverAt).toISOString(),
+      /* What the plan will be once it has changed. */
+      projected: projected === null ? null : describe(projected),
     });
   });
 
