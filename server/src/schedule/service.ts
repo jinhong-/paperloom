@@ -21,6 +21,7 @@ import {
   type DisplayEvent,
   type GalleryPolicy,
 } from "./materialize.js";
+import type { GalleryRule } from "./galleryRules.js";
 import {
   localDayAndMinute,
   resolveInterval,
@@ -719,6 +720,38 @@ export class ScheduleService {
       rotationMode: r.rotation_mode,
       minInterval: r.min_interval,
       maxInterval: r.max_interval,
+      rules: this.galleryRulesFor(r.id),
+    }));
+  }
+
+  /**
+   * The rules that say when a gallery changes its picture.
+   */
+  galleryRulesFor(galleryId: number): GalleryRule[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, days, start_minute, end_minute, min_interval, max_interval, priority
+         FROM gallery_schedule_rules WHERE gallery_id = ?
+         ORDER BY priority, id`,
+      )
+      .all(galleryId) as Array<{
+      id: number;
+      days: number;
+      start_minute: number;
+      end_minute: number;
+      min_interval: number | null;
+      max_interval: number | null;
+      priority: number;
+    }>;
+
+    return rows.map((r) => ({
+      id: r.id,
+      days: r.days,
+      startMinute: r.start_minute,
+      endMinute: r.end_minute,
+      minInterval: r.min_interval,
+      maxInterval: r.max_interval,
+      priority: r.priority,
     }));
   }
 

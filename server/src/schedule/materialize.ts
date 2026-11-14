@@ -35,6 +35,9 @@
 
 import { createHash } from "node:crypto";
 
+import { galleryIntervalAt, type GalleryRule } from "./galleryRules.js";
+import { localDayAndMinute } from "./rules.js";
+
 /** A photo eligible for scheduling. */
 export interface Candidate {
   /** Stable identifier of the source photo. */
@@ -53,6 +56,15 @@ export interface GalleryPolicy {
   readonly rotationMode: "random" | "sequential";
   readonly minInterval: number;
   readonly maxInterval: number;
+  /**
+   * The rules that say when this gallery changes, and how often.
+   *
+   * A gallery does not have to change at the same rate all day. A rule
+   * covers some days and some hours, and gives the gap between two
+   * pictures during that time. A rule with no interval at all means the
+   * gallery is still for that time.
+   */
+  readonly rules?: readonly GalleryRule[];
 }
 
 /** A device's sync and quiet-hours policy. */
@@ -347,14 +359,26 @@ export function materializeSchedule(input: MaterializeInput): DisplayEvent[] {
     /* Choose the interval for the *next* display, so the first event lands
      * at the window start and subsequent ones are spaced out.
      *
-     * The interval is the gallery's own: how often the owner wants the
-     * picture to change. It has nothing to do with how often the frame
-     * checks in with the server. The frame wakes for whichever comes
-     * first, so a picture that falls between two check-ins is still shown
-     * on time: the frame wakes for it, shows it, and goes back to sleep
-     * until the check-in. */
-    const span = Math.max(0, gallery.maxInterval - gallery.minInterval);
-    const intervalSeconds = gallery.minInterval + (span > 0 ? rng.below(span + 1) : 0);
+     * The gallery's own rules say how often it changes at this moment, so
+     * a gallery can change slowly overnight and quickly in the morning. */
+    const moment = localDayAndMinute(cursor, policy.timezone);
+    const gap = galleryIntervalAt(
+      gallery.rules ?? [],
+      gallery.minInterval,
+      gallery.maxInterval,
+      moment.day,
+      moment.minute,
+    );
+
+    /* A gallery that is still for this time shows nothing, so there is no
+     * point in looking for a photo to show. */
+    if (gap.max <= 0) {
+      cursor += Math.max(1, gallery.minInterval) * 1000;
+      continue;
+    }
+
+    const intervalSeconds =
+      gap.min + (gap.max > gap.min ? rng.below(gap.max - gap.min + 1) : 0);
 
     /* An event the plan already has keeps its photo, so that the replay
      * stays in step with the plan and the events that follow carry on

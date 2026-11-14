@@ -583,4 +583,47 @@ CREATE INDEX idx_pinned_photos_at ON pinned_photos(at);
 ALTER TABLE schedules ADD COLUMN handover_at INTEGER;
 `,
   },
+  {
+    id: "0015_gallery_schedule",
+    sql: `
+-- How a gallery's pictures are prepared for the panel.
+--
+-- The reference project has five ways of preparing a picture, and the
+-- difference between them is what the picture looks like. The gallery
+-- chooses one, and every picture in it is prepared that way.
+ALTER TABLE galleries ADD COLUMN tone_preset TEXT NOT NULL DEFAULT 'balanced';
+
+-- When a gallery changes, and how often.
+--
+-- A gallery does not have to change its pictures at the same rate all
+-- day. The rule says which days it applies to, the time of day it covers,
+-- and how often the picture changes during that time. A rule with no
+-- interval at all makes the gallery still for that time.
+--
+-- The rules are per gallery, because they are about the pictures. The
+-- check-in rules are per frame, because they are about the radio.
+CREATE TABLE gallery_schedule_rules (
+  id            INTEGER PRIMARY KEY,
+  -- The gallery the rule is for.
+  gallery_id    INTEGER NOT NULL REFERENCES galleries(id) ON DELETE CASCADE,
+  -- Bit mask of the days of the week the rule applies to.
+  days          INTEGER NOT NULL DEFAULT 127,
+  -- Minutes from local midnight.
+  start_minute  INTEGER NOT NULL DEFAULT 0,
+  end_minute    INTEGER NOT NULL DEFAULT 1440,
+  -- The smallest gap between two pictures during this time, in seconds.
+  --
+  -- The gallery's own interval is used when this is null.
+  min_interval  INTEGER,
+  -- The largest gap between two pictures during this time, in seconds.
+  max_interval  INTEGER,
+  -- Lower numbers win when several rules cover the same moment.
+  priority      INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX idx_gallery_schedule_rules_gallery ON gallery_schedule_rules(gallery_id);
+`,
+  },
 ];

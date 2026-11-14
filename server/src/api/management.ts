@@ -15,6 +15,7 @@ import type { Db } from "../db/index.js";
 import type { ScheduleService } from "../schedule/service.js";
 import { EVERY_DAY } from "../schedule/rules.js";
 import { isRotation } from "../panel.js";
+import { PRESETS } from "../tone.js";
 import { GalleryPhotoService } from "../gallery/photos.js";
 
 export interface ManagementOptions {
@@ -362,7 +363,7 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
     const galleries = db
       .prepare(
         `SELECT g.id, g.name, g.rotation_mode, g.min_interval, g.max_interval,
-                g.quiet_start, g.quiet_end, g.enabled,
+                g.quiet_start, g.quiet_end, g.enabled, g.tone_preset,
                 (SELECT COUNT(*) FROM photos p WHERE p.gallery_id = g.id) AS photo_count
          FROM galleries g
          WHERE g.user_id = ?
@@ -425,7 +426,14 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       quiet_start: number | null;
       quiet_end: number | null;
       enabled: boolean;
+      tone_preset: string;
     }>;
+
+    /* The way the pictures are prepared has to be one we know. */
+    if (body.tone_preset !== undefined && !PRESETS[body.tone_preset]) {
+      await reply.code(400).send({ error: "unknown way of preparing the pictures" });
+      return;
+    }
 
     const fields: string[] = [];
     const values: unknown[] = [];
@@ -443,6 +451,155 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       ...values,
       Number(id),
     );
+
+    invalidateGallery(Number(id));
+
+    await reply.send({ status: "ok" });
+  });
+
+  // ---------------------------------------------------------------------
+  // When a gallery changes its picture
+  // ---------------------------------------------------------------------
+
+  /**
+   * The rules that say when a gallery changes its picture.
+   */
+  app.get(`${basePath}/galleries/:id/schedule-rules`, async (request, reply) => {
+    const userId = await requireUser(request, reply);
+    if (userId === null) return;
+
+    const { id } = request.params as { id: string };
+    const gallery = db
+      .prepare("SELECT id FROM galleries WHERE id = ? AND user_id = ?")
+      .get(Number(id), userId);
+    if (!gallery) {
+      await reply.code(404).send({ error: "unknown gallery" });
+      return;
+    }
+
+    await reply.send({ rules: schedules.galleryRulesFor(Number(id)) });
+  });
+
+  /**
+   * Add a rule to a gallery.
+   */
+  app.post(`${basePath}/galleries/:id/schedule-rules`, async (request, reply) => {
+    const userId = await requireUser(request, reply);
+    if (userId === null) return;
+
+    const { id } = request.params as { id: string };
+    const gallery = db
+      .prepare("SELECT id FROM galleries WHERE id = ? AND user_id = ?")
+      .get(Number(id), userId);
+    if (!gallery) {
+      await reply.code(404).send({ error: "unknown gallery" });
+      return;
+    }
+
+    const body = request.body as {
+      days?: number;
+      start_minute?: number;
+      end_minute?: number;
+      min_interval?: number | null;
+      max_interval?: number | null;
+      priority?: number;
+    };
+
+    const result = db
+      .prepare(
+        `INSERT INTO gallery_schedule_rules
+           (gallery_id, days, start_minute, end_minute, min_interval, max_interval, priority)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        Number(id),
+        body.days ?? 127,
+        body.start_minute ?? 0,
+        body.end_minute ?? 1440,
+        body.min_interval ?? null,
+        body.max_interval ?? null,
+        body.priority ?? 0,
+      );
+
+    invalidateGallery(Number(id));
+
+    await reply.send({ status: "ok", id: Number(result.lastInsertRowid) });
+  });
+
+  /**
+   * Change a rule.
+   */
+  app.patch(`${basePath}/galleries/:id/schedule-rules/:ruleId`, async (request, reply) => {
+    const userId = await requireUser(request, reply);
+    if (userId === null) return;
+
+    const { id, ruleId } = request.params as { id: string; ruleId: string };
+    const gallery = db
+      .prepare("SELECT id FROM galleries WHERE id = ? AND user_id = ?")
+      .get(Number(id), userId);
+    if (!gallery) {
+      await reply.code(404).send({ error: "unknown gallery" });
+      return;
+    }
+
+    const body = request.body as {
+      days?: number;
+      start_minute?: number;
+      end_minute?: number;
+      min_interval?: number | null;
+      max_interval?: number | null;
+      priority?: number;
+    };
+
+    const fields: string[] = [];
+    const values: unknown[] = [];
+    for (const [key, value] of Object.entries(body)) {
+      if (value === undefined) continue;
+      fields.push(`${key} = ?`);
+      values.push(value);
+    }
+    if (fields.length > 0) {
+      const result = db
+        .prepare(
+          `UPDATE gallery_schedule_rules SET ${fields.join(", ")},
+             updated_at = datetime('now')
+           WHERE id = ? AND gallery_id = ?`,
+        )
+        .run(...values, Number(ruleId), Number(id));
+      if (result.changes === 0) {
+        await reply.code(404).send({ error: "unknown rule" });
+        return;
+      }
+    }
+
+    invalidateGallery(Number(id));
+
+    await reply.send({ status: "ok" });
+  });
+
+  /**
+   * Remove a rule.
+   */
+  app.delete(`${basePath}/galleries/:id/schedule-rules/:ruleId`, async (request, reply) => {
+    const userId = await requireUser(request, reply);
+    if (userId === null) return;
+
+    const { id, ruleId } = request.params as { id: string; ruleId: string };
+    const gallery = db
+      .prepare("SELECT id FROM galleries WHERE id = ? AND user_id = ?")
+      .get(Number(id), userId);
+    if (!gallery) {
+      await reply.code(404).send({ error: "unknown gallery" });
+      return;
+    }
+
+    const result = db
+      .prepare("DELETE FROM gallery_schedule_rules WHERE id = ? AND gallery_id = ?")
+      .run(Number(ruleId), Number(id));
+    if (result.changes === 0) {
+      await reply.code(404).send({ error: "unknown rule" });
+      return;
+    }
 
     invalidateGallery(Number(id));
 

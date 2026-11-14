@@ -19,6 +19,7 @@
 import { AssetStore } from "../assets/store.js";
 import type { Db } from "../db/index.js";
 import { PANEL_HEIGHT, PANEL_WIDTH, ROTATIONS } from "../panel.js";
+import { toneParamsFor, type ToneParams } from "../tone.js";
 import type { ScheduleService } from "../schedule/service.js";
 import type { PinnedPhotoService } from "./pinned.js";
 
@@ -67,6 +68,20 @@ export class GalleryPhotoService {
   }
 
   /**
+   * How a gallery's pictures are prepared for the panel.
+   *
+   * The gallery chooses one of the ways of preparing a picture, so that
+   * every picture in it looks the same way.
+   */
+  private toneFor(galleryId: number): Partial<ToneParams> {
+    const row = this.options.db
+      .prepare("SELECT tone_preset FROM galleries WHERE id = ?")
+      .get(galleryId) as { tone_preset: string | null } | undefined;
+
+    return toneParamsFor(row?.tone_preset ?? null);
+  }
+
+  /**
    * Add a photo to a gallery and render it for every rotation.
    *
    * The rendering happens here rather than on the device so that the
@@ -99,10 +114,14 @@ export class GalleryPhotoService {
      * A frame that is turned needs the photo rendered at the turned
      * dimensions and then turned back, which is a different picture and
      * so a different asset. Rendering them all now means a frame can be
-     * turned later without waiting for the photo to be rendered again. */
+     * turned later without waiting for the photo to be rendered again.
+     *
+     * The gallery chooses how the picture is prepared, so that every
+     * picture in it looks the same way. */
+    const tone = this.toneFor(galleryId);
     const renderedByRotation = new Map<number, { hash: string; size: number }>();
     for (const rotation of ROTATIONS) {
-      const rendered = await renderAsset(source, { rotation });
+      const rendered = await renderAsset(source, { rotation, tone });
       const hash = AssetStore.hash(rendered.data);
       await assets.put(hash, rendered.data, PANEL_WIDTH, PANEL_HEIGHT);
       renderedByRotation.set(rotation, { hash, size: rendered.data.length });
