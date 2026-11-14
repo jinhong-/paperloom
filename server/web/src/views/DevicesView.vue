@@ -18,6 +18,16 @@ const session = useSessionStore();
 
 const selected = ref<Device | null>(null);
 const schedule = ref<ScheduleItem[]>([]);
+
+/* When the plan is to change, and what it will become.
+ *
+ * A frame is given the plan it is already following until its next
+ * check-in, so that the times on this page and the times the frame is
+ * working to are the same. The owner is shown what the plan will become,
+ * so that the effect of a change can be seen before it happens. */
+const handoverAt = ref<string | null>(null);
+const projected = ref<ScheduleItem[]>([]);
+
 const error = ref<string | null>(null);
 const notice = ref<string | null>(null);
 
@@ -31,6 +41,12 @@ const busy = ref<string | null>(null);
 const syncInterval = ref(3600);
 const lookahead = ref(10800);
 const timezone = ref("UTC");
+
+/* How the frame is mounted.
+ *
+ * A frame that hangs turned shows its pictures turned, so the pictures are
+ * prepared for it turned too. */
+const rotation = ref(0);
 
 const deviceGalleries = ref<Set<number>>(new Set());
 
@@ -54,6 +70,8 @@ const browserZone = browserTimeZone();
 async function showSchedule(device: Device): Promise<void> {
   selected.value = device;
   schedule.value = [];
+  handoverAt.value = null;
+  projected.value = [];
   error.value = null;
   notice.value = null;
 
@@ -65,10 +83,13 @@ async function showSchedule(device: Device): Promise<void> {
     lookahead.value = device.policy.lookahead;
   }
   timezone.value = device.timezone;
+  rotation.value = device.rotation ?? 0;
 
   try {
     const result = await api.schedule(device.id);
     schedule.value = result.items;
+    handoverAt.value = result.handover_at;
+    projected.value = result.projected ?? [];
     rules.value = await api.syncRules(device.id);
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
@@ -88,6 +109,7 @@ async function savePolicy(): Promise<void> {
       sync_interval: syncInterval.value,
       lookahead: lookahead.value,
       timezone: timezone.value,
+      rotation: rotation.value,
     });
     notice.value = "Policy saved.";
     busy.value = "Policy saved. The frame picks it up at its next check-in.";
@@ -135,6 +157,8 @@ async function removeDevice(device: Device): Promise<void> {
     if (selected.value?.id === device.id) {
       selected.value = null;
       schedule.value = [];
+      handoverAt.value = null;
+      projected.value = [];
       rules.value = [];
     }
     await session.reload();
@@ -353,6 +377,20 @@ onMounted(async () => {
                 </template>
               </td>
             </tr>
+            <tr>
+              <td class="muted">Mounted</td>
+              <td>
+                <select id="rotation" v-model.number="rotation" @change="savePolicy">
+                  <option v-for="angle in [0, 90, 180, 270]" :key="angle" :value="angle">
+                    {{ angle === 0 ? "upright" : `turned ${angle}°` }}
+                  </option>
+                </select>
+                <div class="small muted">
+                  How the frame hangs. A frame that hangs turned shows its
+                  pictures turned, so they are prepared that way.
+                </div>
+              </td>
+            </tr>
           </tbody>
         </table>
       </div>
@@ -522,6 +560,35 @@ onMounted(async () => {
             </div>
             <strong style="min-width: 130px">{{ formatTime(item.at) }}</strong>
             <span class="grow">{{ item.filename ?? "unknown photo" }}</span>
+          </div>
+        </div>
+
+        <!-- The plan is waiting to change. -->
+        <div v-if="handoverAt" class="card" style="margin-top: 16px">
+          <h3>Waiting for the frame's next check-in</h3>
+          <p class="small muted">
+            The frame is still working to the list above, and will keep
+            working to it until it checks in at
+            <strong>{{ formatTime(handoverAt) }}</strong>. At that point it
+            is given the list below, and the times above stop applying.
+          </p>
+
+          <div v-if="projected.length === 0" class="empty">
+            The new list is empty. The frame will show nothing until the
+            gallery has photos again.
+          </div>
+
+          <div v-else class="schedule-list">
+            <div v-for="(item, index) in projected" :key="index" class="schedule-item">
+              <div
+                v-if="item.photo_id"
+                class="photo-preview photo-preview-small"
+              >
+                <img :src="api.photoPreviewUrl(item.photo_id)" :alt="item.filename ?? ''" loading="lazy" />
+              </div>
+              <strong style="min-width: 130px">{{ formatTime(item.at) }}</strong>
+              <span class="grow">{{ item.filename ?? "unknown photo" }}</span>
+            </div>
           </div>
         </div>
       </div>

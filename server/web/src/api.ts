@@ -416,6 +416,7 @@ export const api = {
       quiet_start: number | null;
       quiet_end: number | null;
       timezone: string;
+      rotation: number;
     }>,
   ) =>
     request<{ status: string }>(`/api/devices/${deviceId}/policy`, {
@@ -424,7 +425,15 @@ export const api = {
     }),
 
   schedule: (deviceId: number) =>
-    request<{ revision: string; items: ScheduleItem[] }>(`/api/devices/${deviceId}/schedule`),
+    request<{
+      revision: string;
+      /** The plan the frame is following now. */
+      items: ScheduleItem[];
+      /** When the plan is to change, if it is waiting to. */
+      handover_at: string | null;
+      /** What the plan will become when it changes. */
+      projected: ScheduleItem[];
+    }>(`/api/devices/${deviceId}/schedule`),
 
   /* Check-in rules */
   syncRules: (deviceId: number) => request<SyncRule[]>(`/api/devices/${deviceId}/sync-rules`),
