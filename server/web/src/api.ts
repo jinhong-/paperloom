@@ -15,8 +15,66 @@ export interface Gallery {
   quiet_start: number | null;
   quiet_end: number | null;
   enabled: number;
+  /** How the pictures are prepared for the panel. */
+  tone_preset: string;
   photo_count: number;
 }
+
+/**
+ * A rule saying when a gallery changes its picture.
+ */
+export interface GalleryScheduleRule {
+  id: number;
+  /** Bit mask of the days of the week the rule applies to. */
+  days: number;
+  /** Minutes from local midnight. */
+  start_minute: number;
+  /** Minutes from local midnight. */
+  end_minute: number;
+  /** The smallest gap between two pictures, in seconds. */
+  min_interval: number | null;
+  /** The largest gap between two pictures, in seconds. */
+  max_interval: number | null;
+  /** Lower numbers win when several rules cover the same moment. */
+  priority: number;
+}
+
+/**
+ * The ways a gallery's pictures can be prepared for the panel.
+ *
+ * These are the reference project's own, with the same names.
+ */
+export const TONE_PRESETS: ReadonlyArray<{
+  value: string;
+  title: string;
+  description: string;
+}> = [
+  {
+    value: "balanced",
+    title: "Balanced",
+    description: "Compresses the highlights so they do not blow out. Works well with most pictures.",
+  },
+  {
+    value: "dynamic",
+    title: "Dynamic",
+    description: "Brighter and more colourful. Some parts may be overexposed.",
+  },
+  {
+    value: "vivid",
+    title: "Vivid",
+    description: "Strong colours, for pictures that are colourful to begin with.",
+  },
+  {
+    value: "soft",
+    title: "Soft",
+    description: "Softer, with better gradients.",
+  },
+  {
+    value: "grayscale",
+    title: "Grayscale",
+    description: "For black and white pictures, matched to the panel in LAB space.",
+  },
+];
 
 /** A photo as the server returns it. */
 export interface Photo {
@@ -275,6 +333,45 @@ export const api = {
 
   deleteGallery: (id: number) =>
     request<{ status: string }>(`/api/galleries/${id}`, { method: "DELETE" }),
+
+  /* When a gallery changes its picture */
+
+  galleryScheduleRules: (galleryId: number) =>
+    request<{ rules: GalleryScheduleRule[] }>(
+      `/api/galleries/${galleryId}/schedule-rules`,
+    ),
+
+  addGalleryScheduleRule: (
+    galleryId: number,
+    body: {
+      days?: number;
+      start_minute?: number;
+      end_minute?: number;
+      min_interval?: number | null;
+      max_interval?: number | null;
+      priority?: number;
+    },
+  ) =>
+    request<{ status: string; id: number }>(
+      `/api/galleries/${galleryId}/schedule-rules`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+
+  updateGalleryScheduleRule: (
+    galleryId: number,
+    ruleId: number,
+    body: Partial<GalleryScheduleRule>,
+  ) =>
+    request<{ status: string }>(
+      `/api/galleries/${galleryId}/schedule-rules/${ruleId}`,
+      { method: "PATCH", body: JSON.stringify(body) },
+    ),
+
+  removeGalleryScheduleRule: (galleryId: number, ruleId: number) =>
+    request<{ status: string }>(
+      `/api/galleries/${galleryId}/schedule-rules/${ruleId}`,
+      { method: "DELETE" },
+    ),
 
   /* Photos */
   photos: (galleryId: number) => request<Photo[]>(`/api/galleries/${galleryId}/photos`),
