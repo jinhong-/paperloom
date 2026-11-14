@@ -179,3 +179,98 @@ test("pickWeighted falls back to the full pool when every photo is excluded", ()
   const picked = pickWeighted(only, new Rng(Buffer.from("seed")), 1);
   assert.equal(picked?.photoId, 1);
 });
+
+test("a gallery that is still for the whole day shows nothing", () => {
+  const events = materializeSchedule({
+    deviceId: "1",
+    windowStart,
+    candidates,
+    galleries: [
+      {
+        galleryId: 10,
+        rotationMode: "random",
+        minInterval: 3600,
+        maxInterval: 3600,
+        rules: [
+          {
+            id: 1,
+            days: 127,
+            startMinute: 0,
+            endMinute: 1440,
+            minInterval: null,
+            maxInterval: null,
+            priority: 0,
+          },
+        ],
+      },
+    ],
+    policy,
+  });
+  assert.equal(events.length, 0, "nothing is shown while the gallery is still");
+});
+
+test("a gallery changes again once the still rule no longer covers the moment", () => {
+  const start = Date.UTC(2026, 0, 1, 6, 0, 0);
+  const events = materializeSchedule({
+    deviceId: "1",
+    windowStart: start,
+    candidates,
+    galleries: [
+      {
+        galleryId: 10,
+        rotationMode: "random",
+        minInterval: 3600,
+        maxInterval: 3600,
+        rules: [
+          {
+            id: 1,
+            days: 127,
+            // Only the small hours are still.
+            startMinute: 0,
+            endMinute: 360,
+            minInterval: null,
+            maxInterval: null,
+            priority: 0,
+          },
+        ],
+      },
+    ],
+    policy,
+  });
+  assert.ok(events.length > 0, "the gallery changes again once the rule is over");
+});
+
+test("a rule's own interval is used while it covers the moment", () => {
+  const start = Date.UTC(2026, 0, 1, 6, 0, 0);
+  const events = materializeSchedule({
+    deviceId: "1",
+    windowStart: start,
+    candidates,
+    galleries: [
+      {
+        galleryId: 10,
+        rotationMode: "random",
+        minInterval: 3600,
+        maxInterval: 3600,
+        rules: [
+          {
+            id: 1,
+            days: 127,
+            startMinute: 0,
+            endMinute: 1440,
+            minInterval: 900,
+            maxInterval: 900,
+            priority: 0,
+          },
+        ],
+      },
+    ],
+    policy,
+  });
+
+  assert.ok(events.length > 1);
+  for (let i = 1; i < events.length; i++) {
+    const gap = events[i]!.at - events[i - 1]!.at;
+    assert.equal(gap, 900 * 1000, "the rule's own interval is used");
+  }
+});
