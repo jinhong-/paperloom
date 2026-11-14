@@ -18,7 +18,7 @@ import { readFileSync, existsSync } from "node:fs";
 import Database from "better-sqlite3";
 
 import { AssetStore } from "../assets/store.js";
-import { PANEL_HEIGHT, PANEL_WIDTH } from "../panel.js";
+import { PANEL_HEIGHT, PANEL_WIDTH, isRotation } from "../panel.js";
 import { renderAsset } from "../image.js";
 
 const wanted = process.argv[2];
@@ -46,6 +46,11 @@ const photo = db
 const sourcePath = assets.sourcePathFor(photo.source_hash);
 if (!existsSync(sourcePath)) {
   console.error(`The original of ${photo.filename} is missing`);
+  process.exit(1);
+}
+
+if (!isRotation(row.rotation)) {
+  console.error(`The rendering is at ${row.rotation}°, which is not a way a frame is mounted`);
   process.exit(1);
 }
 
