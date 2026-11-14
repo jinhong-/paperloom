@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 
 import { api } from "@/api";
 import { useSessionStore } from "@/stores/session";
 
 const session = useSessionStore();
+const route = useRoute();
 const router = useRouter();
 
 const username = ref("");
@@ -35,7 +36,11 @@ async function submit(): Promise<void> {
   busy.value = true;
   try {
     await session.login(username.value, password.value);
-    await router.push("/galleries");
+
+    /* Go back to wherever they were going before they were asked to sign
+     * in. */
+    const next = route.query.next;
+    await router.push(typeof next === "string" && next.length > 0 ? next : "/galleries");
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {

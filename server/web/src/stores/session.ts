@@ -17,9 +17,18 @@ export const useSessionStore = defineStore("session", () => {
   const error = ref<string | null>(null);
 
   /**
-   * Whether a user is signed in.
+   * Whether the user is signed in.
    */
   const signedIn = () => username.value !== null;
+
+  /**
+   * Whether the session has been looked at.
+   *
+   * The session is asked about once, when the first page is opened. The
+   * answer is kept, so that moving between the pages does not ask the
+   * server again.
+   */
+  const checked = ref(false);
 
   /**
    * Load the current session, if there is one.
@@ -30,6 +39,8 @@ export const useSessionStore = defineStore("session", () => {
       username.value = user.username;
     } catch {
       username.value = null;
+    } finally {
+      checked.value = true;
     }
   }
 
@@ -58,7 +69,6 @@ export const useSessionStore = defineStore("session", () => {
     galleries.value = [];
     devices.value = [];
   }
-
   /**
    * Reload the galleries and devices.
    */
@@ -83,6 +93,7 @@ export const useSessionStore = defineStore("session", () => {
     loading,
     error,
     signedIn,
+    checked,
     refresh,
     login,
     register,

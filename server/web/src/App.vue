@@ -1,20 +1,14 @@
 <script setup lang="ts">
-import { onMounted } from "vue";
-import { RouterLink, RouterView, useRoute } from "vue-router";
+import { RouterLink, RouterView } from "vue-router";
 
 import { useSessionStore } from "@/stores/session";
 
 const session = useSessionStore();
-const route = useRoute();
-
-onMounted(async () => {
-  await session.refresh();
-});
 </script>
 
 <template>
   <div class="shell">
-    <header v-if="!route.meta.public" class="top">
+    <header class="top">
       <RouterLink to="/galleries" class="brand">Paper<span>loom</span></RouterLink>
       <nav v-if="session.signedIn()">
         <RouterLink to="/galleries">Galleries</RouterLink>
