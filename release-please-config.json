@@ -1,12 +1,16 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
   "packages": {
-    ".": {
-      "release-type": "simple",
-      "package-name": "paperloom",
+    "server/web": {
+      "release-type": "node",
+      "package-name": "paperloom-web",
       "changelog-path": "CHANGELOG.md",
       "extra-files": [
-        "hassio/config.yaml"
+        {
+          "type": "json",
+          "path": "server/web/package.json",
+          "jsonpath": "$.version"
+        }
       ]
     }
   }
