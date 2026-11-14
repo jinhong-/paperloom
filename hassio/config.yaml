@@ -1,6 +1,6 @@
 name: Paperloom
 slug: paperloom
-version: "0.1.0" # x-release-please-version
+version: 0.2.0
 description: Self-hosted server for Paperloom e-paper photo frames
 url: https://github.com/jinhong-/paperloom
 startup: application
@@ -24,6 +24,6 @@ map:
     read_only: true
 environment:
   PAPERLOOM_HOST: 0.0.0.0
-  PAPERLOOM_PORT: "8099"
+  PAPERLOOM_PORT: '8099'
   PAPERLOOM_DATA_DIR: /data/paperloom
   PAPERLOOM_LOG_LEVEL: info
