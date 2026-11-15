@@ -57,6 +57,10 @@ const count = ref(60);
 const unit = ref<FrequencyUnit>("minutes");
 const still = ref(false);
 
+/* The hours of the rule being written, as they are typed. */
+const startText = ref("00:00");
+const endText = ref("24:00");
+
 /* The days as a bit mask. */
 const dayMask = computed(() =>
   days.value.reduce((bits, day) => bits | (1 << day), 0),
@@ -79,12 +83,32 @@ const limitText = computed(() => {
 });
 
 /**
+ * Turn a clock time into minutes from midnight.
+ *
+ * The end of the day is written as 24:00, which is the same moment as
+ * the start of the next day but is clearer in a field.
+ */
+function toMinutes(text: string): number {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(text.trim());
+  if (!match) return 0;
+  return Number(match[1]) * 60 + Number(match[2]);
+}
+
+/**
  * Turn minutes from midnight into a clock time.
  */
 function toClock(minute: number): string {
   const hours = Math.floor(minute / 60);
   return `${String(hours).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
 }
+
+/* The hours of the rule being written follow what is typed. */
+watch(startText, (text) => {
+  startMinute.value = toMinutes(text);
+});
+watch(endText, (text) => {
+  endMinute.value = toMinutes(text);
+});
 
 /**
  * Add a day, or take it away.
@@ -249,11 +273,11 @@ watch(
       <div class="row">
         <div class="field grow">
           <label for="rule-start">From</label>
-          <input id="rule-start" v-model="startMinute" type="number" min="0" max="1440" />
+          <input id="rule-start" v-model="startText" placeholder="00:00" />
         </div>
         <div class="field grow">
           <label for="rule-end">Until</label>
-          <input id="rule-end" v-model="endMinute" type="number" min="0" max="1440" />
+          <input id="rule-end" v-model="endText" placeholder="24:00" />
         </div>
       </div>
 

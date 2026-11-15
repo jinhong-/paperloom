@@ -65,6 +65,7 @@ async function selectGallery(target: Gallery): Promise<void> {
   try {
     photos.value = await api.photos(target.id);
     rules.value = await api.galleryScheduleRules(target.id);
+    loadDrafts(rules.value);
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   }
@@ -97,9 +98,19 @@ async function saveGallery(body: Partial<Gallery>): Promise<void> {
  *
  * The editor works in the owner's terms: which days, and how often. The
  * server works in seconds, so the two are converted here.
+ *
+ * The editor holds the rules while they are being written, and the
+ * server's copy is the one that is saved. The two are kept in step by
+ * loading the server's rules into the editor whenever the gallery
+ * changes.
  */
-const draftRules = computed<DraftRule[]>(() =>
-  rules.value.map((rule) => ({
+const draftRules = ref<DraftRule[]>([]);
+
+/**
+ * Load the rules into the editor, in the owner's terms.
+ */
+function loadDrafts(from: GalleryScheduleRule[]): void {
+  draftRules.value = from.map((rule) => ({
     id: rule.id,
     days: rule.days,
     startMinute: rule.start_minute,
@@ -108,8 +119,20 @@ const draftRules = computed<DraftRule[]>(() =>
       rule.min_interval === null && rule.max_interval === null
         ? null
         : (rule.max_interval ?? rule.min_interval ?? 0),
-  })),
-);
+  }));
+}
+
+/**
+ * The rules in the editor have changed, so they are saved.
+ *
+ * The editor holds the rules while they are written, and the server's
+ * copy is the one that is saved. The editor is given the server's copy
+ * back afterwards, so that the two are the same.
+ */
+async function onRulesChanged(drafts: DraftRule[]): Promise<void> {
+  draftRules.value = drafts;
+  await saveRules(drafts);
+}
 
 /**
  * Save the rules the editor holds.
@@ -151,6 +174,7 @@ async function saveRules(drafts: DraftRule[]): Promise<void> {
     }
 
     rules.value = await api.galleryScheduleRules(selected.value.id);
+    loadDrafts(rules.value);
     notice.value = "The schedule was saved. The frame picks it up at its next check-in.";
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
@@ -505,7 +529,7 @@ onMounted(async () => {
             :enabled="scheduleEnabled"
             :rules="draftRules"
             @update:enabled="setScheduleEnabled"
-            @update:rules="saveRules"
+            @update:rules="onRulesChanged"
           />
         </div>
 
