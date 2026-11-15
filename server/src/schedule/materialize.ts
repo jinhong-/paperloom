@@ -35,7 +35,7 @@
 
 import { createHash } from "node:crypto";
 
-import { galleryIntervalAt, type GalleryRule } from "./galleryRules.js";
+import { ruleAtMoment, type GalleryRule } from "./galleryRules.js";
 import { localDayAndMinute } from "./rules.js";
 
 /** A photo eligible for scheduling. */
@@ -53,18 +53,34 @@ export interface Candidate {
 /** A gallery's scheduling policy. */
 export interface GalleryPolicy {
   readonly galleryId: number;
-  readonly rotationMode: "random" | "sequential";
-  readonly minInterval: number;
-  readonly maxInterval: number;
   /**
-   * The rules that say when this gallery changes, and how often.
+   * The rules that say when this gallery changes, and how.
    *
-   * A gallery does not have to change at the same rate all day. A rule
-   * covers some days and some hours, and gives the gap between two
-   * pictures during that time. A rule with no interval at all means the
-   * gallery is still for that time.
+   * A rule covers some days and some hours, and says how often the
+   * picture changes during that time and how the pictures are picked. A
+   * rule with no interval at all means the gallery is still for that
+   * time.
+   *
+   * A gallery with no rules is still for the whole day, and is changed
+   * by hand.
    */
   readonly rules?: readonly GalleryRule[];
+  /**
+   * Whether the gallery changes its picture on its own.
+   *
+   * A gallery that is off changes only when the owner sets the picture by
+   * hand. It is a setting rather than something worked out from the
+   * rules, because a gallery that has just been made has no rules yet,
+   * and that is not the same as a gallery that has been turned off.
+   */
+  readonly scheduleEnabled?: boolean;
+  /**
+   * The picture the owner has set by hand.
+   *
+   * It is used when the gallery is off, and is the only picture the
+   * frame is given.
+   */
+  readonly manualAsset?: string | null;
 }
 
 /** A device's sync and quiet-hours policy. */
@@ -367,29 +383,44 @@ export function materializeSchedule(input: MaterializeInput): DisplayEvent[] {
     turns += 1;
     const gallery = galleries[rng.below(galleries.length)]!;
 
+    /* The picture the owner has set by hand is shown first.
+     *
+     * A gallery that is off shows it and nothing else: it changes only
+     * when the owner says so, so the picture is shown once and the
+     * gallery then waits for the next one to be set.
+     *
+     * A gallery that is on shows it at the start of the window, and then
+     * carries on with its rules. This is how the owner says "show this
+     * one now", without turning the gallery off. */
+    const manual = gallery.manualAsset;
+    if (manual && !existingByAt.has(floorToMinute(cursor))) {
+      events.push({ at: cursor, asset: manual });
+    }
+
+    if (gallery.scheduleEnabled === false) {
+      /* There is nothing more to put in the window, so the loop is over. */
+      break;
+    }
+
     /* Choose the interval for the *next* display, so the first event lands
      * at the window start and subsequent ones are spaced out.
      *
-     * The gallery's own rules say how often it changes at this moment, so
-     * a gallery can change slowly overnight and quickly in the morning. */
+     * The gallery's own rules say how often it changes at this moment and
+     * how the pictures are picked, so a gallery can change slowly
+     * overnight and quickly in the morning, and walk its pictures in
+     * order by day and pick them at random at night. */
     const moment = localDayAndMinute(cursor, policy.timezone);
-    const gap = galleryIntervalAt(
-      gallery.rules ?? [],
-      gallery.minInterval,
-      gallery.maxInterval,
-      moment.day,
-      moment.minute,
-    );
+    const rule = ruleAtMoment(gallery.rules ?? [], moment.day, moment.minute);
 
     /* A gallery that is still for this time shows nothing, so there is no
      * point in looking for a photo to show. */
-    if (gap.max <= 0) {
-      cursor += Math.max(1, gallery.minInterval) * 1000;
+    if (rule.max <= 0) {
+      cursor += Math.max(1, rule.min) * 1000;
       continue;
     }
 
     const intervalSeconds =
-      gap.min + (gap.max > gap.min ? rng.below(gap.max - gap.min + 1) : 0);
+      rule.min + (rule.max > rule.min ? rng.below(rule.max - rule.min + 1) : 0);
 
     /* An event the plan already has keeps its photo, so that the replay
      * stays in step with the plan and the events that follow carry on
@@ -403,7 +434,7 @@ export function materializeSchedule(input: MaterializeInput): DisplayEvent[] {
     let picked: Candidate | undefined;
     if (already) {
       picked = candidates.find((c) => c.contentHash === already.asset);
-    } else if (gallery.rotationMode === "sequential") {
+    } else if (rule.rotationMode === "sequential") {
       picked = pickSequential(usable, lastPhotoId, currentAsset);
     } else {
       picked = pickWeighted(usable, rng, lastPhotoId);

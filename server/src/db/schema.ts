@@ -626,4 +626,116 @@ CREATE TABLE gallery_schedule_rules (
 CREATE INDEX idx_gallery_schedule_rules_gallery ON gallery_schedule_rules(gallery_id);
 `,
   },
+  {
+    id: "0016_one_gallery_per_device",
+    sql: `
+-- A frame shows one gallery.
+--
+-- A frame used to have as many galleries as it liked, and rotated through
+-- them. A frame shows one thing, and the gallery is that thing, so the
+-- gallery is a property of the frame rather than a list beside it.
+--
+-- The frames that had more than one gallery keep the first they were
+-- given, which is the one they were showing when the change was made.
+ALTER TABLE devices ADD COLUMN gallery_id INTEGER REFERENCES galleries(id) ON DELETE SET NULL;
+
+-- The frames that had more than one gallery keep the first they were
+-- given, which is the one they were showing when the change was made.
+UPDATE devices
+   SET gallery_id = (
+     SELECT MIN(dg.gallery_id) FROM device_galleries dg WHERE dg.device_id = devices.id
+   )
+ WHERE gallery_id IS NULL;
+
+DROP TABLE device_galleries;
+CREATE INDEX idx_devices_gallery ON devices(gallery_id);
+
+-- How often a rule changes the picture, in a unit the owner chose.
+--
+-- The interval is kept in seconds, and the unit is kept beside it so
+-- that the page can say "every 5 days" rather than "every 432000
+-- seconds". The unit is only for showing: the schedule itself is worked
+-- out in seconds.
+ALTER TABLE gallery_schedule_rules ADD COLUMN interval_unit TEXT NOT NULL DEFAULT 'minutes';
+ALTER TABLE gallery_schedule_rules ADD COLUMN min_unit TEXT;
+ALTER TABLE gallery_schedule_rules ADD COLUMN max_unit TEXT;
+`,
+  },
+  {
+    id: "0017_gallery_telegram_mode",
+    sql: `
+-- How pictures from a chat arrive at a gallery.
+--
+-- In the queue mode each picture is shown after the one before it, so
+-- that the pictures arrive in the order they were sent. In the latest
+-- mode a new picture replaces the one that is waiting, because a gallery
+-- that changes once a day has no use for a queue of pictures: only the
+-- last one sent is of any interest.
+--
+-- The mode belongs to the gallery, because it is about the pictures.
+ALTER TABLE galleries ADD COLUMN telegram_mode TEXT NOT NULL DEFAULT 'queue';
+
+-- Whether the gallery changes its picture on its own.
+--
+-- A gallery that is on changes at the pace its rules and its own
+-- interval say. A gallery that is off changes only when the owner sets
+-- the picture by hand, which is what a gallery of one particular picture
+-- wants.
+--
+-- The setting is here rather than being worked out from the rules,
+-- because a gallery that has just been made has no rules yet, and that
+-- is not the same as a gallery that has been turned off.
+ALTER TABLE galleries ADD COLUMN schedule_enabled INTEGER NOT NULL DEFAULT 1;
+
+-- The picture a frame shows when its gallery has no schedule.
+--
+-- A gallery with no rules changes on its own schedule: nothing is
+-- scheduled, and the picture shown is the one the owner has set. The
+-- frame is told about it, and the picture is kept on the server for as
+-- long as the frame might want it.
+CREATE TABLE gallery_manual_pictures (
+  gallery_id    INTEGER PRIMARY KEY REFERENCES galleries(id) ON DELETE CASCADE,
+  -- The photo the picture is made from.
+  photo_id      INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+  -- The asset that is sent to the frame.
+  content_hash  TEXT NOT NULL,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`,
+  },
+  {
+    id: "0018_rule_rotation",
+    sql: `
+-- How a rule picks its pictures, and how often it changes.
+--
+-- The gap between two pictures is said by the rules now, in the unit the
+-- owner chose, so the gallery's own gap goes.
+--
+-- The way the pictures are picked is said by the rules as well. A
+-- gallery can show its pictures in order by day and pick them at random
+-- at night, which is not something a single setting on the gallery can
+-- say.
+--
+-- The rules that already existed become rules that cover every day, so
+-- that a gallery that was set up before this change keeps working the
+-- way it did.
+INSERT INTO gallery_schedule_rules
+  (gallery_id, days, start_minute, end_minute, min_interval, max_interval, priority)
+SELECT id, 127, 0, 1440, min_interval, max_interval, 0
+  FROM galleries
+ WHERE min_interval IS NOT NULL;
+
+ALTER TABLE gallery_schedule_rules ADD COLUMN rotation_mode TEXT NOT NULL DEFAULT 'random';
+
+UPDATE gallery_schedule_rules
+   SET rotation_mode = (
+     SELECT g.rotation_mode FROM galleries g WHERE g.id = gallery_schedule_rules.gallery_id
+   );
+
+ALTER TABLE galleries DROP COLUMN min_interval;
+ALTER TABLE galleries DROP COLUMN max_interval;
+ALTER TABLE galleries DROP COLUMN rotation_mode;
+`,
+  },
 ];

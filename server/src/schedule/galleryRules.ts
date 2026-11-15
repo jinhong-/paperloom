@@ -17,7 +17,7 @@ import { DAY_BITS, DAY_NAMES } from "./defaults.js";
 import { localDayAndMinute } from "./rules.js";
 
 /**
- * One rule about when a gallery changes.
+ * One rule about when a gallery changes, and how.
  */
 export interface GalleryRule {
   readonly id: number;
@@ -33,23 +33,45 @@ export interface GalleryRule {
   readonly maxInterval: number | null;
   /** Lower numbers win when several rules cover the same moment. */
   readonly priority: number;
+  /**
+   * How the pictures of this rule are picked.
+   *
+   * In order, so that the gallery is walked through, or at random. It
+   * belongs to the rule rather than to the gallery, so that a gallery
+   * can show its pictures in order by day and pick them at random at
+   * night.
+   */
+  readonly rotationMode: "random" | "sequential";
 }
 
 /**
- * The interval a gallery changes at, at a moment.
- *
- * The result is the gap between two pictures, in seconds. A gap of zero
- * means the gallery is still: nothing is shown during that time.
- *
- * The gallery's own interval is used when no rule covers the moment.
+ * What a rule says about a moment.
  */
-export function galleryIntervalAt(
+export interface RuleAtMoment {
+  /** The smallest gap between two pictures, in seconds. Zero means still. */
+  readonly min: number;
+  /** The largest gap between two pictures, in seconds. */
+  readonly max: number;
+  /** How the pictures are picked. */
+  readonly rotationMode: "random" | "sequential";
+}
+
+/**
+ * The rule that applies at a moment.
+ *
+ * The rule with the lowest priority number wins. When no rule covers the
+ * moment, the gallery is still: there is nothing to show and nothing to
+ * pick.
+ *
+ * @param rules  The gallery's rules.
+ * @param day    The day of the week, 0 for Sunday.
+ * @param minute The minute from local midnight.
+ */
+export function ruleAtMoment(
   rules: readonly GalleryRule[],
-  galleryMinInterval: number,
-  galleryMaxInterval: number,
   day: number,
   minute: number,
-): { min: number; max: number } {
+): RuleAtMoment {
   let best: GalleryRule | undefined;
 
   for (const rule of rules) {
@@ -65,17 +87,22 @@ export function galleryIntervalAt(
   }
 
   if (best === undefined) {
-    return { min: galleryMinInterval, max: galleryMaxInterval };
+    /* Nothing covers this moment, so the gallery is still. */
+    return { min: 0, max: 0, rotationMode: "random" };
   }
 
   /* A rule with no interval at all means the gallery is still. */
   if (best.minInterval === null && best.maxInterval === null) {
-    return { min: 0, max: 0 };
+    return { min: 0, max: 0, rotationMode: best.rotationMode };
   }
 
-  const min = best.minInterval ?? galleryMinInterval;
-  const max = best.maxInterval ?? galleryMaxInterval;
-  return { min: Math.min(min, max), max: Math.max(min, max) };
+  const min = best.minInterval ?? 0;
+  const max = best.maxInterval ?? min;
+  return {
+    min: Math.min(min, max),
+    max: Math.max(min, max),
+    rotationMode: best.rotationMode,
+  };
 }
 
 /**

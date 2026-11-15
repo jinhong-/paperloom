@@ -67,9 +67,21 @@ async function createGalleryWithPhoto(
     method: "POST",
     url: "/api/galleries",
     headers: { cookie },
-    payload: { name: "Test gallery", rotation_mode: "sequential", min_interval: 900, max_interval: 900 },
+    payload: {
+      name: "Test gallery",
+      rules: [
+        {
+          days: 127,
+          start_minute: 0,
+          end_minute: 1440,
+          min_interval: 900,
+          max_interval: 900,
+          rotation_mode: "sequential",
+        },
+      ],
+    },
   });
-  assert.equal(created.statusCode, 200);
+  assert.equal(created.statusCode, 200, created.body);
   const galleryId = (created.json() as { id: number }).id;
 
   // A small red square, so the dither has something to work with.

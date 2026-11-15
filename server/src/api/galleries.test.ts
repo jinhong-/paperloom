@@ -131,28 +131,69 @@ test("the intervals have to be sensible", async (t) => {
   /* A gallery that changes every second would fill a plan with tens of
    * thousands of events. */
   const tooShort = await server.app.inject({
-    method: "PATCH",
-    url: `/api/galleries/${galleryId}`,
+    method: "POST",
+    url: `/api/galleries/${galleryId}/schedule-rules`,
     headers: { cookie },
-    payload: { min_interval: 1 },
+    payload: { min_interval: 1, max_interval: 1 },
   });
   assert.equal(tooShort.statusCode, 400);
 
   const tooLong = await server.app.inject({
-    method: "PATCH",
-    url: `/api/galleries/${galleryId}`,
+    method: "POST",
+    url: `/api/galleries/${galleryId}/schedule-rules`,
     headers: { cookie },
-    payload: { max_interval: 10_000_000 },
+    payload: { min_interval: 10_000_000, max_interval: 10_000_000 },
   });
   assert.equal(tooLong.statusCode, 400);
 
   const sensible = await server.app.inject({
-    method: "PATCH",
-    url: `/api/galleries/${galleryId}`,
+    method: "POST",
+    url: `/api/galleries/${galleryId}/schedule-rules`,
     headers: { cookie },
     payload: { min_interval: 120, max_interval: 300 },
   });
-  assert.equal(sensible.statusCode, 200);
+  assert.equal(sensible.statusCode, 200, sensible.body);
+});
+
+test("a rule says how the pictures are picked", async (t) => {
+  const server = await makeServer();
+  t.after(async () => {
+    await server.app.close();
+  });
+
+  const cookie = await signIn(server);
+
+  const created = await server.app.inject({
+    method: "POST",
+    url: "/api/galleries",
+    headers: { cookie },
+    payload: { name: "Gallery" },
+  });
+  const galleryId = (created.json() as { id: number }).id;
+
+  const unknown = await server.app.inject({
+    method: "POST",
+    url: `/api/galleries/${galleryId}/schedule-rules`,
+    headers: { cookie },
+    payload: { rotation_mode: "sideways" },
+  });
+  assert.equal(unknown.statusCode, 400);
+
+  const added = await server.app.inject({
+    method: "POST",
+    url: `/api/galleries/${galleryId}/schedule-rules`,
+    headers: { cookie },
+    payload: { min_interval: 3600, max_interval: 3600, rotation_mode: "sequential" },
+  });
+  assert.equal(added.statusCode, 200, added.body);
+
+  const rules = await server.app.inject({
+    method: "GET",
+    url: `/api/galleries/${galleryId}/schedule-rules`,
+    headers: { cookie },
+  });
+  const listed = rules.json() as Array<{ rotation_mode: string }>;
+  assert.equal(listed[0]!.rotation_mode, "sequential");
 });
 
 test("a rule has to make sense", async (t) => {

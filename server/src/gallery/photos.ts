@@ -82,6 +82,36 @@ export class GalleryPhotoService {
   }
 
   /**
+   * Whether any frame's plan still names an asset.
+   *
+   * A plan is not rebuilt when the gallery changes. It is handed over at
+   * the frame's next check-in, and until then the frame is working to the
+   * plan it has, and will ask for the assets the plan names.
+   *
+   * So an asset that a plan names has to stay on the server, even when no
+   * photo points at it any more.
+   */
+  private planUsesAsset(contentHash: string): boolean {
+    const rows = this.options.db
+      .prepare("SELECT events_json FROM schedules")
+      .all() as Array<{ events_json: string }>;
+
+    for (const row of rows) {
+      let events: Array<{ asset?: string }>;
+      try {
+        events = JSON.parse(row.events_json) as Array<{ asset?: string }>;
+      } catch {
+        continue;
+      }
+      for (const event of events) {
+        if (event.asset === contentHash) return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
    * Render a gallery's pictures again, and in a new way of preparing them.
    *
    * The way a picture is prepared is the gallery's, not the picture's, so
@@ -154,8 +184,16 @@ export class GalleryPhotoService {
 
     /* The replaced renderings are removed, unless a new rendering happens
      * to have the same bytes, which is the case when the way of preparing
-     * the pictures has not actually changed. */
+     * the pictures has not actually changed.
+     *
+     * A rendering that a plan still names is kept, even though no photo
+     * points at it any more. The plan a frame is following is not rebuilt
+     * until the frame checks in, and until then the frame will ask for
+     * the assets the plan names. Removing one of them would leave the
+     * frame unable to show the picture it was told to show. */
     for (const hash of replaced) {
+      if (this.planUsesAsset(hash)) continue;
+
       const inUse = db
         .prepare(
           `SELECT COUNT(*) AS n FROM photo_assets WHERE content_hash = ?
@@ -295,10 +333,10 @@ export class GalleryPhotoService {
   invalidateGallery(galleryId: number, now: number): void {
     const { db, schedules } = this.options;
     const devices = db
-      .prepare("SELECT device_id FROM device_galleries WHERE gallery_id = ?")
-      .all(galleryId) as Array<{ device_id: number }>;
+      .prepare("SELECT id FROM devices WHERE gallery_id = ?")
+      .all(galleryId) as Array<{ id: number }>;
     for (const device of devices) {
-      schedules.invalidate(device.device_id, now);
+      schedules.invalidate(device.id, now);
     }
   }
 }

@@ -17,6 +17,7 @@ import {
   type Candidate,
   type GalleryPolicy,
 } from "./materialize.js";
+import type { GalleryRule } from "./galleryRules.js";
 
 const candidates: Candidate[] = [
   { photoId: 1, contentHash: "aaa", weight: 1, belongsTo: 10 },
@@ -24,9 +25,41 @@ const candidates: Candidate[] = [
   { photoId: 3, contentHash: "ccc", weight: 1, belongsTo: 10 },
 ];
 
-const galleries: GalleryPolicy[] = [
-  { galleryId: 10, rotationMode: "random", minInterval: 3600, maxInterval: 3600 },
-];
+/**
+ * A gallery whose rule covers every day.
+ *
+ * The rules say when a gallery changes and how the pictures are picked,
+ * so a gallery is described by its rules.
+ */
+function gallery(
+  over: Partial<GalleryPolicy> & {
+    interval?: number | null;
+    rotationMode?: "random" | "sequential";
+    rule?: Partial<GalleryRule>;
+  } = {},
+): GalleryPolicy {
+  const { interval = 3600, rotationMode = "random", rule = {}, ...rest } = over;
+
+  return {
+    galleryId: 10,
+    rules: [
+      {
+        id: 1,
+        days: 127,
+        startMinute: 0,
+        endMinute: 1440,
+        minInterval: interval,
+        maxInterval: interval,
+        priority: 0,
+        rotationMode,
+        ...rule,
+      },
+    ],
+    ...rest,
+  };
+}
+
+const galleries: GalleryPolicy[] = [gallery()];
 
 const policy = {
   syncInterval: 3600,
@@ -124,7 +157,7 @@ test("sequential mode walks the gallery in order", () => {
     deviceId: "1",
     windowStart,
     candidates,
-    galleries: [{ galleryId: 10, rotationMode: "sequential", minInterval: 3600, maxInterval: 3600 }],
+    galleries: [gallery({ rotationMode: "sequential" })],
     policy,
   });
   const order = events.map((e) => e.asset);
@@ -138,7 +171,7 @@ test("sequential mode wraps around the gallery", () => {
     deviceId: "1",
     windowStart,
     candidates,
-    galleries: [{ galleryId: 10, rotationMode: "sequential", minInterval: 1800, maxInterval: 1800 }],
+    galleries: [gallery({ interval: 1800, rotationMode: "sequential" })],
     policy: { ...policy, lookahead: 14400 },
   });
   const order = events.map((e) => e.asset);
@@ -186,23 +219,10 @@ test("a gallery that is still for the whole day shows nothing", () => {
     windowStart,
     candidates,
     galleries: [
-      {
-        galleryId: 10,
-        rotationMode: "random",
-        minInterval: 3600,
-        maxInterval: 3600,
-        rules: [
-          {
-            id: 1,
-            days: 127,
-            startMinute: 0,
-            endMinute: 1440,
-            minInterval: null,
-            maxInterval: null,
-            priority: 0,
-          },
-        ],
-      },
+      gallery({
+        interval: null,
+        rule: { minInterval: null, maxInterval: null },
+      }),
     ],
     policy,
   });
@@ -218,9 +238,6 @@ test("a gallery changes again once the still rule no longer covers the moment", 
     galleries: [
       {
         galleryId: 10,
-        rotationMode: "random",
-        minInterval: 3600,
-        maxInterval: 3600,
         rules: [
           {
             id: 1,
@@ -231,6 +248,18 @@ test("a gallery changes again once the still rule no longer covers the moment", 
             minInterval: null,
             maxInterval: null,
             priority: 0,
+            rotationMode: "random",
+          },
+          {
+            id: 2,
+            days: 127,
+            // The rest of the day changes as usual.
+            startMinute: 360,
+            endMinute: 1440,
+            minInterval: 3600,
+            maxInterval: 3600,
+            priority: 0,
+            rotationMode: "random",
           },
         ],
       },
@@ -246,25 +275,7 @@ test("a rule's own interval is used while it covers the moment", () => {
     deviceId: "1",
     windowStart: start,
     candidates,
-    galleries: [
-      {
-        galleryId: 10,
-        rotationMode: "random",
-        minInterval: 3600,
-        maxInterval: 3600,
-        rules: [
-          {
-            id: 1,
-            days: 127,
-            startMinute: 0,
-            endMinute: 1440,
-            minInterval: 900,
-            maxInterval: 900,
-            priority: 0,
-          },
-        ],
-      },
-    ],
+    galleries: [gallery({ interval: 900 })],
     policy,
   });
 
@@ -273,4 +284,81 @@ test("a rule's own interval is used while it covers the moment", () => {
     const gap = events[i]!.at - events[i - 1]!.at;
     assert.equal(gap, 900 * 1000, "the rule's own interval is used");
   }
+});
+
+test("a gallery that is off shows the picture that was set by hand", () => {
+  const events = materializeSchedule({
+    deviceId: "1",
+    windowStart,
+    candidates,
+    galleries: [
+      gallery({
+        scheduleEnabled: false,
+        manualAsset: "the-picture-the-owner-chose",
+      }),
+    ],
+    policy,
+  });
+
+  assert.equal(events.length, 1, "only the picture that was set is shown");
+  assert.equal(events[0]!.asset, "the-picture-the-owner-chose");
+});
+
+test("a gallery that is off and has no picture shows nothing", () => {
+  const events = materializeSchedule({
+    deviceId: "1",
+    windowStart,
+    candidates,
+    galleries: [
+      gallery({
+        scheduleEnabled: false,
+        manualAsset: null,
+      }),
+    ],
+    policy,
+  });
+
+  assert.equal(events.length, 0, "there is no picture to show");
+});
+
+test("a gallery that is on shows the picture that was set by hand first", () => {
+  /* The owner says "show this one now", without turning the gallery off.
+   * The picture is shown at the start of the window, and the gallery then
+   * carries on with its rules. */
+  const events = materializeSchedule({
+    deviceId: "1",
+    windowStart,
+    candidates,
+    galleries: [
+      gallery({
+        scheduleEnabled: true,
+        manualAsset: "the-picture-the-owner-chose",
+      }),
+    ],
+    policy,
+  });
+
+  assert.ok(events.length > 1, "the picture is shown and then the rules carry on");
+  assert.equal(events[0]!.asset, "the-picture-the-owner-chose");
+});
+
+test("a gallery that is on but has no rules shows nothing", () => {
+  /* A gallery with no rules has nothing scheduled. The gap between two
+   * pictures is said by the rules now, so a gallery without any is
+   * still until a rule is added. */
+  const events = materializeSchedule({
+    deviceId: "1",
+    windowStart,
+    candidates,
+    galleries: [
+      {
+        galleryId: 10,
+        rules: [],
+        scheduleEnabled: true,
+      },
+    ],
+    policy,
+  });
+
+  assert.equal(events.length, 0, "nothing is scheduled without a rule");
 });

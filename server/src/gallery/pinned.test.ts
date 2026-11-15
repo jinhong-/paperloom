@@ -53,11 +53,18 @@ async function makeWorld(): Promise<World> {
   const galleryId = Number(
     db
       .prepare(
-        `INSERT INTO galleries (user_id, name, rotation_mode, min_interval, max_interval)
-         VALUES (?, 'Gallery', 'random', 900, 900)`,
+        `INSERT INTO galleries (user_id, name) VALUES (?, \'Gallery\')`,
       )
       .run(userId).lastInsertRowid,
   );
+
+  /* The rules say how often the gallery changes and how the pictures are
+   * picked, so a gallery needs one to change at all. */
+  db.prepare(
+    `INSERT INTO gallery_schedule_rules
+       (gallery_id, days, start_minute, end_minute, min_interval, max_interval, rotation_mode)
+     VALUES (?, 127, 0, 1440, 900, 900, 'random')`,
+  ).run(galleryId);
 
   const deviceId = Number(
     db
@@ -65,10 +72,7 @@ async function makeWorld(): Promise<World> {
       .run(userId).lastInsertRowid,
   );
 
-  db.prepare("INSERT INTO device_galleries (device_id, gallery_id) VALUES (?, ?)").run(
-    deviceId,
-    galleryId,
-  );
+  db.prepare("UPDATE devices SET gallery_id = ? WHERE id = ?").run(galleryId, deviceId);
   db.prepare("INSERT INTO device_policies (device_id) VALUES (?)").run(deviceId);
 
   return { db, assets, schedules, pins, photos, galleryId, deviceId };
@@ -114,11 +118,18 @@ async function seedGallery(server: BuiltServer): Promise<{ galleryId: number; co
   const galleryId = Number(
     db
       .prepare(
-        `INSERT INTO galleries (user_id, name, rotation_mode, min_interval, max_interval)
-         VALUES (?, 'Test', 'sequential', 3600, 3600)`,
+        `INSERT INTO galleries (user_id, name) VALUES (?, \'Test\')`,
       )
       .run(userId).lastInsertRowid,
   );
+
+  /* The rules say how often the gallery changes and how the pictures are
+   * picked, so a gallery needs one to change at all. */
+  db.prepare(
+    `INSERT INTO gallery_schedule_rules
+       (gallery_id, days, start_minute, end_minute, min_interval, max_interval, rotation_mode)
+     VALUES (?, 127, 0, 1440, 900, 900, 'random')`,
+  ).run(galleryId);
 
   /* A minimal but valid asset. The device API only cares that the hash
    * resolves to stored bytes. */
@@ -260,12 +271,76 @@ test("a newer picture queues behind the one pinned before", async () => {
   );
 });
 
+test("in the latest mode a newer picture replaces the one waiting", async () => {
+  const world = await makeWorld();
+
+  /* A gallery that changes once a day has no use for a queue of
+   * pictures: only the last one sent is of any interest. */
+  world.db
+    .prepare("UPDATE galleries SET telegram_mode = 'latest' WHERE id = ?")
+    .run(world.galleryId);
+
+  const first = await world.photos.addPhoto(world.galleryId, "one.png", await image(220, 30, 30), {
+    pin: true,
+  });
+  const second = await world.photos.addPhoto(world.galleryId, "two.png", await image(30, 30, 220), {
+    pin: true,
+  });
+
+  /* Only the newer picture is waiting. */
+  const waiting = world.pins.pendingFor(world.deviceId);
+  assert.equal(waiting.length, 1, "only one picture must be waiting");
+  assert.equal(waiting[0]!.photo_id, second.id, "the newer picture must be the one waiting");
+
+  /* And the one that was waiting has gone. */
+  const all = world.db
+    .prepare("SELECT photo_id FROM pinned_photos WHERE device_id = ?")
+    .all(world.deviceId) as Array<{ photo_id: number }>;
+  assert.equal(all.length, 1);
+  assert.notEqual(all[0]!.photo_id, first.id, "the picture it replaced must be gone");
+});
+
+test("in the latest mode the picture is shown at the moment the old one was waiting for", async () => {
+  const world = await makeWorld();
+
+  world.db
+    .prepare("UPDATE galleries SET telegram_mode = 'latest' WHERE id = ?")
+    .run(world.galleryId);
+
+  await world.photos.addPhoto(world.galleryId, "one.png", await image(220, 30, 30), { pin: true });
+  const firstMoment = world.pins.pendingFor(world.deviceId)[0]!.at;
+
+  await world.photos.addPhoto(world.galleryId, "two.png", await image(30, 30, 220), { pin: true });
+
+  const waiting = world.pins.pendingFor(world.deviceId);
+  assert.equal(waiting.length, 1);
+  assert.equal(
+    waiting[0]!.at,
+    firstMoment,
+    "the picture must be shown at the moment the frame was already expecting one",
+  );
+});
+
 test("every picture in the queue is in the plan", () => {
   const candidates: Candidate[] = [
     { photoId: 2, contentHash: "ordinary", weight: 1, belongsTo: 1 },
   ];
   const galleries: GalleryPolicy[] = [
-    { galleryId: 1, rotationMode: "random", minInterval: 900, maxInterval: 900 },
+    {
+      galleryId: 1,
+      rules: [
+        {
+          id: 1,
+          days: 127,
+          startMinute: 0,
+          endMinute: 1440,
+          minInterval: 900,
+          maxInterval: 900,
+          priority: 0,
+          rotationMode: "random",
+        },
+      ],
+    },
   ];
   const policy = {
     syncInterval: 3600,
@@ -313,8 +388,8 @@ test("every frame showing the gallery gets the picture pinned", async () => {
       .run().lastInsertRowid,
   );
   world.db
-    .prepare("INSERT INTO device_galleries (device_id, gallery_id) VALUES (?, ?)")
-    .run(secondDevice, world.galleryId);
+    .prepare("UPDATE devices SET gallery_id = ? WHERE id = ?")
+    .run(world.galleryId, secondDevice);
   world.db.prepare("INSERT INTO device_policies (device_id) VALUES (?)").run(secondDevice);
 
   const added = await world.photos.addPhoto(world.galleryId, "pinned.png", await image(220, 30, 30), {
@@ -373,7 +448,21 @@ test("the pinned picture takes the place of whatever would have been shown", () 
     { photoId: 1, contentHash: "old", weight: 1, belongsTo: 1 },
   ];
   const galleries: GalleryPolicy[] = [
-    { galleryId: 1, rotationMode: "random", minInterval: 900, maxInterval: 900 },
+    {
+      galleryId: 1,
+      rules: [
+        {
+          id: 1,
+          days: 127,
+          startMinute: 0,
+          endMinute: 1440,
+          minInterval: 900,
+          maxInterval: 900,
+          priority: 0,
+          rotationMode: "random",
+        },
+      ],
+    },
   ];
   const policy = {
     syncInterval: 3600,
@@ -438,7 +527,21 @@ test("a plan that already has the pinned moment is not given it twice", () => {
     { photoId: 2, contentHash: "pinned", weight: 1, belongsTo: 1 },
   ];
   const galleries: GalleryPolicy[] = [
-    { galleryId: 1, rotationMode: "random", minInterval: 900, maxInterval: 900 },
+    {
+      galleryId: 1,
+      rules: [
+        {
+          id: 1,
+          days: 127,
+          startMinute: 0,
+          endMinute: 1440,
+          minInterval: 900,
+          maxInterval: 900,
+          priority: 0,
+          rotationMode: "random",
+        },
+      ],
+    },
   ];
   const policy = {
     syncInterval: 3600,
@@ -474,7 +577,21 @@ test("a pinned picture outside the window is not shown in it", () => {  const ca
     { photoId: 1, contentHash: "old", weight: 1, belongsTo: 1 },
   ];
   const galleries: GalleryPolicy[] = [
-    { galleryId: 1, rotationMode: "random", minInterval: 900, maxInterval: 900 },
+    {
+      galleryId: 1,
+      rules: [
+        {
+          id: 1,
+          days: 127,
+          startMinute: 0,
+          endMinute: 1440,
+          minInterval: 900,
+          maxInterval: 900,
+          priority: 0,
+          rotationMode: "random",
+        },
+      ],
+    },
   ];
   const policy = {
     syncInterval: 3600,
@@ -566,10 +683,7 @@ test("a picture is slotted into the frame's next check-in", async () => {
     userId,
     deviceRowId,
   );
-  db.prepare("INSERT INTO device_galleries (device_id, gallery_id) VALUES (?, ?)").run(
-    deviceRowId,
-    galleryId,
-  );
+  db.prepare("UPDATE devices SET gallery_id = ? WHERE id = ?").run(galleryId, deviceRowId);
   db.prepare(
     "INSERT INTO device_policies (device_id, sync_interval, lookahead) VALUES (?, 3600, 10800)",
   ).run(deviceRowId);

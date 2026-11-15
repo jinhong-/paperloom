@@ -325,6 +325,22 @@ static int64_t run_cycle(wake_reason_t reason) {
                  (long long)time_now_ms());
         sync_due = true;
         time_invalidate();
+    } else if (time_lost_power()) {
+        /* The frame lost its power while it was asleep.
+         *
+         * The clock came back counting from the beginning of the epoch,
+         * and the correction it had was thrown away, because it belonged
+         * to a clock that no longer exists. The frame has no idea what
+         * time it is, and the only thing it can do about that is ask the
+         * server.
+         *
+         * This has to be checked on the clock's own reading, and not on
+         * the time it works out to: a frame whose clock was reset and
+         * then had the old correction put back on it reads a perfectly
+         * plausible time, and the wrong one. */
+        ESP_LOGW(TAG, "The frame lost its power while it was asleep; "
+                      "the time has to be asked for again");
+        sync_due = true;
     }
 
     /* 2. Sync if needed. This may also bring down new assets. */
@@ -479,8 +495,16 @@ static int64_t run_cycle(wake_reason_t reason) {
          *
          * Saying so is better than leaving a blank panel, which looks
          * like a fault. The screen points at the dashboard where the
-         * photos are added. */
-        if (!display_task_ready_shown()) {
+         * photos are added.
+         *
+         * But a frame that has already shown a picture keeps it. A
+         * gallery that has been turned off has nothing scheduled, and
+         * the last picture is still the right thing to show: the frame
+         * is meant to keep showing it until it is told otherwise. */
+        const char *shown = schedule_displayed_asset();
+        if (shown != NULL && shown[0] != '\0') {
+            ESP_LOGI(TAG, "There is nothing to show, so the last picture stays");
+        } else if (!display_task_ready_shown()) {
             ESP_LOGI(TAG, "There are no photos yet; showing the ready screen");
             display_task_show_ready_screen(
                 sync_dashboard_url()[0] != '\0' ? sync_dashboard_url() : sync_server_url());

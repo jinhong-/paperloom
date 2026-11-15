@@ -27,6 +27,22 @@ export interface ManagementOptions {
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
+/**
+ * A rule about when a gallery changes its picture, and how.
+ *
+ * The gap between two pictures and the way the pictures are picked are
+ * both said by the rule.
+ */
+interface GalleryRuleBody {
+  days?: number;
+  start_minute?: number;
+  end_minute?: number;
+  min_interval?: number | null;
+  max_interval?: number | null;
+  priority?: number;
+  rotation_mode?: "random" | "sequential";
+}
+
 export function registerManagementApi(app: FastifyInstance, options: ManagementOptions): void {
   const { db, assets, schedules, basePath } = options;
 
@@ -88,6 +104,7 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
     end_minute?: number;
     min_interval?: number | null;
     max_interval?: number | null;
+    rotation_mode?: "random" | "sequential";
   }): boolean {
     if (body.days !== undefined && (!Number.isInteger(body.days) || body.days < 0 || body.days > 127)) {
       return false;
@@ -102,7 +119,35 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       if (value === undefined || value === null) continue;
       if (!Number.isFinite(value) || value < 60 || value > 604_800) return false;
     }
+    if (
+      body.rotation_mode !== undefined &&
+      body.rotation_mode !== "random" &&
+      body.rotation_mode !== "sequential"
+    ) {
+      return false;
+    }
     return true;
+  }
+
+  /**
+   * Add a rule to a gallery.
+   */
+  function insertRule(galleryId: number, body: GalleryRuleBody): void {
+    db.prepare(
+      `INSERT INTO gallery_schedule_rules
+         (gallery_id, days, start_minute, end_minute, min_interval, max_interval,
+          priority, rotation_mode)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      galleryId,
+      body.days ?? 127,
+      body.start_minute ?? 0,
+      body.end_minute ?? 1440,
+      body.min_interval ?? null,
+      body.max_interval ?? null,
+      body.priority ?? 0,
+      body.rotation_mode ?? "random",
+    );
   }
 
   // ---------------------------------------------------------------------
@@ -393,9 +438,13 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
 
     const galleries = db
       .prepare(
-        `SELECT g.id, g.name, g.rotation_mode, g.min_interval, g.max_interval,
-                g.quiet_start, g.quiet_end, g.enabled, g.tone_preset,
-                (SELECT COUNT(*) FROM photos p WHERE p.gallery_id = g.id) AS photo_count
+        `SELECT g.id, g.name,
+                g.quiet_start, g.quiet_end, g.enabled, g.tone_preset, g.telegram_mode,
+                g.schedule_enabled,
+                (SELECT COUNT(*) FROM photos p WHERE p.gallery_id = g.id) AS photo_count,
+                (SELECT COUNT(*) FROM gallery_schedule_rules r WHERE r.gallery_id = g.id) AS rule_count,
+                (SELECT mp.photo_id FROM gallery_manual_pictures mp WHERE mp.gallery_id = g.id)
+                  AS manual_photo_id
          FROM galleries g
          WHERE g.user_id = ?
          ORDER BY g.name`,
@@ -411,39 +460,34 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
 
     const body = request.body as {
       name?: string;
-      rotation_mode?: "random" | "sequential";
-      min_interval?: number;
-      max_interval?: number;
+      schedule_enabled?: boolean;
+      rules?: GalleryRuleBody[];
     };
     if (!body?.name) {
       await reply.code(400).send({ error: "name is required" });
       return;
     }
 
-    /* The intervals have to be sensible: see the update route. */
-    for (const key of ["min_interval", "max_interval"] as const) {
-      const value = body[key];
-      if (value === undefined) continue;
-      if (!Number.isFinite(value) || value < 60 || value > 604_800) {
-        await reply.code(400).send({
-          error: `${key} must be between 60 seconds and a week`,
-        });
+    const result = db
+      .prepare("INSERT INTO galleries (user_id, name) VALUES (?, ?)")
+      .run(userId, body.name);
+
+    const galleryId = Number(result.lastInsertRowid);
+
+    /* The rules say how often the gallery changes and how the pictures are
+     * picked, and they are made with the gallery so that it is made the
+     * way it is going to be used. */
+    for (const rule of body.rules ?? []) {
+      if (!validRule(rule)) {
+        await reply.code(400).send({ error: "the rule does not make sense" });
         return;
       }
+      insertRule(galleryId, rule);
     }
 
-    const result = db
-      .prepare(
-        `INSERT INTO galleries (user_id, name, rotation_mode, min_interval, max_interval)
-         VALUES (?, ?, ?, ?, ?)`,
-      )
-      .run(
-        userId,
-        body.name,
-        body.rotation_mode ?? "random",
-        body.min_interval ?? 900,
-        body.max_interval ?? 21600,
-      );
+    if (body.schedule_enabled === false) {
+      db.prepare("UPDATE galleries SET schedule_enabled = 0 WHERE id = ?").run(galleryId);
+    }
 
     await reply.send({ id: Number(result.lastInsertRowid) });
   });
@@ -463,13 +507,12 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
 
     const body = request.body as Partial<{
       name: string;
-      rotation_mode: "random" | "sequential";
-      min_interval: number;
-      max_interval: number;
       quiet_start: number | null;
       quiet_end: number | null;
       enabled: boolean;
       tone_preset: string;
+      telegram_mode: "queue" | "latest";
+      schedule_enabled: boolean;
     }>;
 
     /* The way the pictures are prepared has to be one we know. */
@@ -478,21 +521,10 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       return;
     }
 
-    /* The intervals have to be sensible.
-     *
-     * A gallery that changes every second would fill a plan with tens of
-     * thousands of events, and the plan is sent to a frame over the
-     * network. A minute is the shortest gap that makes sense, and a week
-     * is longer than any gap anybody wants. */
-    for (const key of ["min_interval", "max_interval"] as const) {
-      const value = body[key];
-      if (value === undefined) continue;
-      if (!Number.isFinite(value) || value < 60 || value > 604_800) {
-        await reply.code(400).send({
-          error: `${key} must be between 60 seconds and a week`,
-        });
-        return;
-      }
+    /* The way the pictures from a chat arrive has to be one we know. */
+    if (body.telegram_mode !== undefined && body.telegram_mode !== "queue" && body.telegram_mode !== "latest") {
+      await reply.code(400).send({ error: "unknown way of receiving pictures" });
+      return;
     }
 
     const fields: string[] = [];
@@ -554,6 +586,7 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
         min_interval: rule.minInterval,
         max_interval: rule.maxInterval,
         priority: rule.priority,
+        rotation_mode: rule.rotationMode,
       })),
     );
   });
@@ -574,39 +607,18 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       return;
     }
 
-    const body = request.body as {
-      days?: number;
-      start_minute?: number;
-      end_minute?: number;
-      min_interval?: number | null;
-      max_interval?: number | null;
-      priority?: number;
-    };
+    const body = request.body as GalleryRuleBody;
 
     if (!validRule(body)) {
       await reply.code(400).send({ error: "the rule does not make sense" });
       return;
     }
 
-    const result = db
-      .prepare(
-        `INSERT INTO gallery_schedule_rules
-           (gallery_id, days, start_minute, end_minute, min_interval, max_interval, priority)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        Number(id),
-        body.days ?? 127,
-        body.start_minute ?? 0,
-        body.end_minute ?? 1440,
-        body.min_interval ?? null,
-        body.max_interval ?? null,
-        body.priority ?? 0,
-      );
+    insertRule(Number(id), body);
 
     invalidateGallery(Number(id));
 
-    await reply.send({ status: "ok", id: Number(result.lastInsertRowid) });
+    await reply.send({ status: "ok" });
   });
 
   /**
@@ -625,14 +637,7 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       return;
     }
 
-    const body = request.body as {
-      days?: number;
-      start_minute?: number;
-      end_minute?: number;
-      min_interval?: number | null;
-      max_interval?: number | null;
-      priority?: number;
-    };
+    const body = request.body as GalleryRuleBody;
 
     if (!validRule(body)) {
       await reply.code(400).send({ error: "the rule does not make sense" });
@@ -688,6 +693,117 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       await reply.code(404).send({ error: "unknown rule" });
       return;
     }
+
+    invalidateGallery(Number(id));
+
+    await reply.send({ status: "ok" });
+  });
+
+  // ---------------------------------------------------------------------
+  // The picture a gallery shows when its schedule is off
+  // ---------------------------------------------------------------------
+
+  /**
+   * The picture a gallery shows when it has no schedule.
+   *
+   * A gallery with no rules changes only when the owner says so. This is
+   * the picture it shows then.
+   */
+  app.get(`${basePath}/galleries/:id/manual-picture`, async (request, reply) => {
+    const userId = await requireUser(request, reply);
+    if (userId === null) return;
+
+    const { id } = request.params as { id: string };
+    const gallery = db
+      .prepare("SELECT id FROM galleries WHERE id = ? AND user_id = ?")
+      .get(Number(id), userId);
+    if (!gallery) {
+      await reply.code(404).send({ error: "unknown gallery" });
+      return;
+    }
+
+    const manual = db
+      .prepare(
+        `SELECT mp.photo_id, mp.content_hash, p.filename
+         FROM gallery_manual_pictures mp
+         JOIN photos p ON p.id = mp.photo_id
+         WHERE mp.gallery_id = ?`,
+      )
+      .get(Number(id)) as
+      | { photo_id: number; content_hash: string; filename: string }
+      | undefined;
+
+    await reply.send({ picture: manual ?? null });
+  });
+
+  /**
+   * Set the picture a gallery shows when it has no schedule.
+   *
+   * The picture has to be one of the gallery's own, so that it is
+   * rendered for the panel in the first place.
+   */
+  app.put(`${basePath}/galleries/:id/manual-picture`, async (request, reply) => {
+    const userId = await requireUser(request, reply);
+    if (userId === null) return;
+
+    const { id } = request.params as { id: string };
+    const gallery = db
+      .prepare("SELECT id FROM galleries WHERE id = ? AND user_id = ?")
+      .get(Number(id), userId);
+    if (!gallery) {
+      await reply.code(404).send({ error: "unknown gallery" });
+      return;
+    }
+
+    const body = request.body as { photo_id?: number };
+    if (!body?.photo_id) {
+      await reply.code(400).send({ error: "photo_id is required" });
+      return;
+    }
+
+    const photo = db
+      .prepare("SELECT id, content_hash FROM photos WHERE id = ? AND gallery_id = ?")
+      .get(body.photo_id, Number(id)) as { id: number; content_hash: string | null } | undefined;
+    if (!photo) {
+      await reply.code(404).send({ error: "unknown photo" });
+      return;
+    }
+    if (!photo.content_hash) {
+      await reply.code(400).send({ error: "the photo has not been rendered yet" });
+      return;
+    }
+
+    db.prepare(
+      `INSERT INTO gallery_manual_pictures (gallery_id, photo_id, content_hash)
+       VALUES (?, ?, ?)
+       ON CONFLICT(gallery_id) DO UPDATE SET
+         photo_id = excluded.photo_id,
+         content_hash = excluded.content_hash,
+         updated_at = datetime('now')`,
+    ).run(Number(id), photo.id, photo.content_hash);
+
+    invalidateGallery(Number(id));
+
+    await reply.send({ status: "ok" });
+  });
+
+  /**
+   * Stop the gallery showing a set picture.
+   */
+  app.delete(`${basePath}/galleries/:id/manual-picture`, async (request, reply) => {
+    const userId = await requireUser(request, reply);
+    if (userId === null) return;
+
+    const { id } = request.params as { id: string };
+    const gallery = db
+      .prepare("SELECT id FROM galleries WHERE id = ? AND user_id = ?")
+      .get(Number(id), userId);
+    if (!gallery) {
+      await reply.code(404).send({ error: "unknown gallery" });
+      return;
+    }
+
+    db.prepare("DELETE FROM gallery_manual_pictures WHERE gallery_id = ?").run(Number(id));
 
     invalidateGallery(Number(id));
 
@@ -874,20 +990,16 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       .prepare(
         `SELECT id, name, device_id, state, panel_width, panel_height, timezone,
                 rotation, battery_mv, firmware_version, displayed_asset,
-                last_seen_at, created_at
+                last_seen_at, created_at, gallery_id
          FROM devices WHERE user_id = ? ORDER BY name`,
       )
       .all(userId) as Array<Record<string, unknown> & { id: number }>;
 
-    /* The galleries a frame shows, and the policy that decides how it
+    /* The gallery a frame shows, and the policy that decides how it
      * checks in, come with it.
      *
      * Without them the management page has to guess, and what it shows is
      * not what the frame is actually doing. */
-    const galleryRows = db
-      .prepare("SELECT device_id, gallery_id FROM device_galleries")
-      .all() as Array<{ device_id: number; gallery_id: number }>;
-
     const policyRows = db
       .prepare(
         `SELECT device_id, sync_interval, lookahead, quiet_start, quiet_end
@@ -901,13 +1013,6 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       quiet_end: number | null;
     }>;
 
-    const galleriesByDevice = new Map<number, number[]>();
-    for (const row of galleryRows) {
-      const list = galleriesByDevice.get(row.device_id) ?? [];
-      list.push(row.gallery_id);
-      galleriesByDevice.set(row.device_id, list);
-    }
-
     const policyByDevice = new Map(policyRows.map((row) => [row.device_id, row]));
 
     await reply.send(
@@ -915,7 +1020,6 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
         const policy = policyByDevice.get(device.id);
         return {
           ...device,
-          galleries: galleriesByDevice.get(device.id) ?? [],
           policy: policy
             ? {
                 sync_interval: policy.sync_interval,
@@ -937,8 +1041,8 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
     const body = request.body as { gallery_id?: number };
 
     const device = db
-      .prepare("SELECT id FROM devices WHERE id = ? AND user_id = ?")
-      .get(Number(id), userId);
+      .prepare("SELECT id, gallery_id FROM devices WHERE id = ? AND user_id = ?")
+      .get(Number(id), userId) as { id: number; gallery_id: number | null } | undefined;
     if (!device) {
       await reply.code(404).send({ error: "unknown device" });
       return;
@@ -948,13 +1052,22 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       return;
     }
 
-    db.prepare(
-      `INSERT INTO device_galleries (device_id, gallery_id) VALUES (?, ?)
-       ON CONFLICT DO NOTHING`,
-    ).run(Number(id), body.gallery_id);
+    /* The gallery has to be the owner's. */
+    const gallery = db
+      .prepare("SELECT id FROM galleries WHERE id = ? AND user_id = ?")
+      .get(body.gallery_id, userId);
+    if (!gallery) {
+      await reply.code(404).send({ error: "unknown gallery" });
+      return;
+    }
 
-    /* The device's schedule changes with its galleries, so the windows
-     * that were materialised from the old set are no longer right. */
+    /* A frame shows one gallery. Assigning a different one replaces the
+     * one it had, rather than being refused, so that changing a frame's
+     * gallery is a single step. */
+    db.prepare("UPDATE devices SET gallery_id = ? WHERE id = ?").run(body.gallery_id, Number(id));
+
+    /* The device's schedule changes with its gallery, so the windows
+     * that were materialised from the old one are no longer right. */
     schedules.invalidate(Number(id), Date.now());
 
     await reply.send({ status: "ok" });
@@ -973,7 +1086,9 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       return;
     }
 
-    db.prepare("DELETE FROM device_galleries WHERE device_id = ? AND gallery_id = ?").run(
+    /* The frame is only left without a gallery if the gallery being
+     * removed is the one it has. */
+    db.prepare("UPDATE devices SET gallery_id = NULL WHERE id = ? AND gallery_id = ?").run(
       Number(id),
       Number(galleryId),
     );

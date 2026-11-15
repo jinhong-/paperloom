@@ -700,27 +700,31 @@ export class ScheduleService {
    * The galleries assigned to a device, with their policy.
    */
   private galleriesFor(deviceId: number): GalleryPolicy[] {
+    const rotation = this.rotationFor(deviceId);
+
     const rows = this.db
       .prepare(
-        `SELECT g.id, g.rotation_mode, g.min_interval, g.max_interval
+        `SELECT g.id, g.schedule_enabled,
+                COALESCE(mp.content_hash, pa.content_hash) AS manual_asset
          FROM galleries g
-         JOIN device_galleries dg ON dg.gallery_id = g.id
-         WHERE dg.device_id = ? AND g.enabled = 1
+         JOIN devices d ON d.gallery_id = g.id
+         LEFT JOIN gallery_manual_pictures mp ON mp.gallery_id = g.id
+         LEFT JOIN photos p ON p.id = mp.photo_id
+         LEFT JOIN photo_assets pa ON pa.photo_id = mp.photo_id AND pa.rotation = ?
+         WHERE d.id = ? AND g.enabled = 1
          ORDER BY g.id`,
       )
-      .all(deviceId) as Array<{
+      .all(rotation, deviceId) as Array<{
       id: number;
-      rotation_mode: "random" | "sequential";
-      min_interval: number;
-      max_interval: number;
+      schedule_enabled: number;
+      manual_asset: string | null;
     }>;
 
     return rows.map((r) => ({
       galleryId: r.id,
-      rotationMode: r.rotation_mode,
-      minInterval: r.min_interval,
-      maxInterval: r.max_interval,
       rules: this.galleryRulesFor(r.id),
+      scheduleEnabled: r.schedule_enabled === 1,
+      manualAsset: r.manual_asset,
     }));
   }
 
@@ -730,7 +734,8 @@ export class ScheduleService {
   galleryRulesFor(galleryId: number): GalleryRule[] {
     const rows = this.db
       .prepare(
-        `SELECT id, days, start_minute, end_minute, min_interval, max_interval, priority
+        `SELECT id, days, start_minute, end_minute, min_interval, max_interval,
+                priority, rotation_mode
          FROM gallery_schedule_rules WHERE gallery_id = ?
          ORDER BY priority, id`,
       )
@@ -742,6 +747,7 @@ export class ScheduleService {
       min_interval: number | null;
       max_interval: number | null;
       priority: number;
+      rotation_mode: "random" | "sequential";
     }>;
 
     return rows.map((r) => ({
@@ -752,6 +758,7 @@ export class ScheduleService {
       minInterval: r.min_interval,
       maxInterval: r.max_interval,
       priority: r.priority,
+      rotationMode: r.rotation_mode,
     }));
   }
 
@@ -772,9 +779,9 @@ export class ScheduleService {
                 p.weight, p.gallery_id
          FROM photos p
          JOIN galleries g ON g.id = p.gallery_id
-         JOIN device_galleries dg ON dg.gallery_id = p.gallery_id
+         JOIN devices d ON d.gallery_id = p.gallery_id
          LEFT JOIN photo_assets pa ON pa.photo_id = p.id AND pa.rotation = ?
-         WHERE dg.device_id = ?
+         WHERE d.id = ?
            AND g.enabled = 1
            AND COALESCE(pa.content_hash, p.content_hash) IS NOT NULL
          ORDER BY p.id`,

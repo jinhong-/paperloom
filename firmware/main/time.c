@@ -37,6 +37,13 @@ static int64_t s_time_offset_ms = 0;
 /* Whether the clock has ever been anchored to the server. */
 static bool s_time_valid = false;
 
+/* Whether the clock lost its power while the frame was asleep.
+ *
+ * A frame that has been unpowered comes back with its clock reset to the
+ * beginning of the epoch. It has no idea what time it is, and the only
+ * thing it can do about that is ask the server. */
+static bool s_lost_power = false;
+
 /* Where the offset is kept.
  *
  * The offset has to survive a deep sleep. A frame spends most of its life
@@ -105,14 +112,41 @@ static void time_offset_restore(void) {
             raw = (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
         }
 
+        /* The clock's own reading has to be a real time as well.
+         *
+         * A frame that has been completely unpowered comes back with its
+         * clock reset to the beginning of the epoch, and counting from
+         * there. The stored offset would then put it at the time it was
+         * last seen, which is a perfectly plausible time but the wrong
+         * one: the frame would be hours out, and would happily show the
+         * wrong picture at the wrong time for as long as it slept.
+         *
+         * So the reading is checked on its own, before the offset is
+         * applied. A clock that reads from the epoch is not running, and
+         * the offset has nothing to correct.
+         *
+         * This is checked first, because it is the more precise
+         * diagnosis. A clock that has been reset has also gone backwards,
+         * and would be caught by the test below, but that test would say
+         * only that the clock was reset and not that the frame had lost
+         * its power, which is the thing the frame has to act on. */
+        const int64_t earliest_plausible_ms = 1577836800000LL; /* 2020-01-01 */
+
         /* The clock has to have moved on since the offset was stored. It
          * runs a little slow over a long sleep, so a small shortfall is
-         * expected and is allowed for. A clock that reads from the
-         * beginning of the epoch, or one that has gone backwards, means
-         * it was reset and the offset is of no use. */
+         * expected and is allowed for. */
         const int64_t max_shortfall_ms = 60 * 1000;
 
-        if (!have_raw || !have_now || raw + max_shortfall_ms < stored_raw) {
+        if (have_now && raw < earliest_plausible_ms) {
+            /* The clock is counting from the beginning of the epoch. It
+             * lost its power, and the offset would point it at the time it
+             * was last seen rather than at the time it is now. */
+            s_lost_power = true;
+            ESP_LOGW(TAG, "The clock reads %lld ms, which is not a real time; "
+                         "the frame has probably lost power, so the time "
+                         "has to be asked for again",
+                     (long long)raw);
+        } else if (!have_raw || !have_now || raw + max_shortfall_ms < stored_raw) {
             ESP_LOGW(TAG, "The clock was reset while the frame was asleep; "
                          "the time has to be asked for again");
         } else {
@@ -179,6 +213,22 @@ int64_t time_now_ms(void) {
  */
 bool time_is_valid(void) {
     return s_time_valid;
+}
+
+/**
+ * Whether the frame lost its power while it was asleep.
+ *
+ * A frame that has been unpowered comes back with its clock reset to the
+ * beginning of the epoch, so it has no idea what time it is. It cannot
+ * work out what is due, and the server would refuse its requests
+ * anyway, so it has to ask the server for the time before it does
+ * anything else.
+ *
+ * @return true if the clock lost its power and the time has to be asked
+ *         for again.
+ */
+bool time_lost_power(void) {
+    return s_lost_power;
 }
 
 /**
