@@ -38,7 +38,6 @@
       "release-type": "simple",
       "package-name": "paperloom-hassio",
       "changelog-path": "CHANGELOG.md",
-      "skip-github-release": true,
       "version-file": "version.txt",
       "extra-files": [
         {
