@@ -244,12 +244,12 @@ watch(
     </label>
     <div class="small muted">
       <template v-if="enabled">
-        The rules below say when it changes. With no rules it changes at
-        the pace set above, all day.
+        The rules below say when it changes. A gallery with no rules stops
+        rotating, and shows only the pictures you ask for.
       </template>
       <template v-else>
-        The gallery is off. It shows the picture set below, and changes
-        only when you set a new one.
+        The gallery is off. It shows only the pictures you ask for, and
+        nothing else.
       </template>
     </div>
   </div>
