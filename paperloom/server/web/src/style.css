@@ -1,0 +1,455 @@
+:root {
+  --bg: #12100e;
+  --panel: #1b1815;
+  --panel-2: #242019;
+  --border: #3a332b;
+  --text: #f0ebe3;
+  --muted: #a89f92;
+  --accent: #d8a657;
+  --accent-dim: #8a6a37;
+  --danger: #d1685f;
+  --ok: #7fbf7f;
+  --radius: 10px;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  min-height: 100vh;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+.shell {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 0 20px 64px;
+}
+
+header.top {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 22px 0;
+  margin-bottom: 28px;
+  border-bottom: 1px solid var(--border);
+}
+
+header.top .brand {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text);
+}
+
+header.top .brand span {
+  color: var(--accent);
+}
+
+header.top nav {
+  display: flex;
+  gap: 18px;
+  flex: 1;
+}
+
+header.top nav a {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+header.top nav a.router-link-active {
+  color: var(--text);
+}
+
+header.top .who {
+  color: var(--muted);
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+h1 {
+  font-size: 24px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+h2 {
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
+.subtitle {
+  color: var(--muted);
+  margin-bottom: 24px;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-bottom: 16px;
+}
+
+.row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.row.between {
+  justify-content: space-between;
+}
+
+.grow {
+  flex: 1;
+}
+
+button,
+.button {
+  background: var(--accent);
+  color: #1a1409;
+  border: none;
+  border-radius: 8px;
+  padding: 9px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: #e6b straight;
+  background: #e7b569;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button.secondary {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+button.secondary:hover:not(:disabled) {
+  background: #2e2922;
+}
+
+button.is-selected {
+  border-color: var(--accent-dim);
+}
+
+button.danger {
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+}
+
+button.link {
+  background: none;
+  color: var(--muted);
+  padding: 4px 8px;
+  font-weight: 500;
+}
+
+button.link:hover:not(:disabled) {
+  background: none;
+  color: var(--text);
+  text-decoration: underline;
+}
+
+input,
+select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 9px 12px;
+  font-size: 14px;
+  font-family: inherit;
+  width: 100%;
+}
+
+input:focus,
+select:focus {
+  outline: none;
+  border-color: var(--accent-dim);
+}
+
+/* A field that does not hold what it should. */
+input.invalid {
+  border-color: var(--danger);
+}
+
+input.invalid:focus {
+  border-color: var(--danger);
+}
+
+label {
+  display: block;
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+/* A label with a box beside it.
+ *
+ * A checkbox with its label beside it, rather than above it, so that the
+ * two read as one thing. The label is a block by default, which would
+ * put it on its own line, so it is told to sit beside the box. */
+label.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+label.check input {
+  width: auto;
+  margin: 0;
+}
+
+.field {
+  margin-bottom: 16px;
+}
+
+/* A value that is shown, but cannot be changed. */
+.static-value {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 9px 12px;
+  font-size: 14px;
+  word-break: break-all;
+}
+
+.grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+@media (max-width: 720px) {
+  .grid-2 {
+    grid-template-columns: 1fr;
+  }
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th {
+  text-align: left;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  font-weight: 600;
+  padding: 0 12px 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+td {
+  padding: 12px 12px 12px 0;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+tr:last-child td {
+  border-bottom: none;
+}
+
+.tag {
+  display: inline-block;
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.tag.ok {
+  color: var(--ok);
+  border-color: #35502f;
+}
+
+.tag.pending {
+  color: var(--accent);
+  border-color: var(--accent-dim);
+}
+
+.error {
+  background: #2a1a19;
+  border: 1px solid #57302c;
+  color: #f0b3ad;
+  padding: 12px 14px;
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+
+.ok {
+  background: #1a2419;
+  border: 1px solid #35502f;
+  color: var(--ok);
+  padding: 12px 14px;
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.small {
+  font-size: 13px;
+}
+
+.mono {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+
+.empty {
+  color: var(--muted);
+  padding: 28px 0;
+  text-align: center;
+}
+
+.dropzone {
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 28px;
+  text-align: center;
+  color: var(--muted);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.dropzone:hover,
+.dropzone.over {
+  border-color: var(--accent-dim);
+  background: var(--panel-2);
+}
+
+.thumb {
+  width: 44px;
+  height: 59px;
+  border-radius: 4px;
+  background: var(--panel-2);
+  object-fit: cover;
+  border: 1px solid var(--border);
+}
+
+.schedule-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  /* The plan covers the whole lookahead, which is a good few dozen
+   * pictures. The list scrolls rather than making the page endless. */
+  max-height: 480px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.schedule-item {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 12px;
+  background: var(--panel-2);
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+/* The photo preview in the gallery.
+ *
+ * The frame is 1200x1600, which is a portrait shape, so the preview is
+ * shown in that shape too. The frame's own colours are applied as a
+ * backdrop so that a photo which is mostly one colour still reads as a
+ * picture rather than a blank rectangle. */
+.photo-card {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.photo-preview {
+  width: 60px;
+  height: 80px;
+  flex: none;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  position: relative;
+}
+
+.photo-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* Shown in place of a preview that cannot be loaded. */
+.photo-preview-missing {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  font-size: 10px;
+  line-height: 1.2;
+  color: var(--muted);
+  padding: 4px;
+}
+
+/* The thumbnail in the schedule list. */
+.photo-preview-small {
+  width: 30px;
+  height: 40px;
+}
+
+/* The buttons that pick the days of the week. */
+.day-toggle {
+  min-width: 34px;
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
+.day-toggle.is-selected {
+  background: var(--accent);
+  color: #1b1815;
+  border-color: var(--accent);
+}
