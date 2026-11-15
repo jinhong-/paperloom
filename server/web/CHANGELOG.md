@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.2](https://github.com/jinhong-/paperloom/compare/paperloom-web-v0.5.1...paperloom-web-v0.5.2) (2026-11-15)
+
+
+### Bug Fixes
+
+* **web:** the pages and the API are reached through the prefix ([d73e60e](https://github.com/jinhong-/paperloom/commit/d73e60ee29226de17e4e78afc8a2419492270ab4))
+
 ## [0.5.1](https://github.com/jinhong-/paperloom/compare/paperloom-web-v0.5.0...paperloom-web-v0.5.1) (2026-11-15)
 
 
