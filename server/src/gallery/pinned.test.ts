@@ -53,11 +53,18 @@ async function makeWorld(): Promise<World> {
   const galleryId = Number(
     db
       .prepare(
-        `INSERT INTO galleries (user_id, name, rotation_mode, min_interval, max_interval)
-         VALUES (?, 'Gallery', 'random', 900, 900)`,
+        `INSERT INTO galleries (user_id, name) VALUES (?, \'Gallery\')`,
       )
       .run(userId).lastInsertRowid,
   );
+
+  /* The rules say how often the gallery changes and how the pictures are
+   * picked, so a gallery needs one to change at all. */
+  db.prepare(
+    `INSERT INTO gallery_schedule_rules
+       (gallery_id, days, start_minute, end_minute, min_interval, max_interval, rotation_mode)
+     VALUES (?, 127, 0, 1440, 900, 900, 'random')`,
+  ).run(galleryId);
 
   const deviceId = Number(
     db
@@ -111,11 +118,18 @@ async function seedGallery(server: BuiltServer): Promise<{ galleryId: number; co
   const galleryId = Number(
     db
       .prepare(
-        `INSERT INTO galleries (user_id, name, rotation_mode, min_interval, max_interval)
-         VALUES (?, 'Test', 'sequential', 3600, 3600)`,
+        `INSERT INTO galleries (user_id, name) VALUES (?, \'Test\')`,
       )
       .run(userId).lastInsertRowid,
   );
+
+  /* The rules say how often the gallery changes and how the pictures are
+   * picked, so a gallery needs one to change at all. */
+  db.prepare(
+    `INSERT INTO gallery_schedule_rules
+       (gallery_id, days, start_minute, end_minute, min_interval, max_interval, rotation_mode)
+     VALUES (?, 127, 0, 1440, 900, 900, 'random')`,
+  ).run(galleryId);
 
   /* A minimal but valid asset. The device API only cares that the hash
    * resolves to stored bytes. */
@@ -312,7 +326,21 @@ test("every picture in the queue is in the plan", () => {
     { photoId: 2, contentHash: "ordinary", weight: 1, belongsTo: 1 },
   ];
   const galleries: GalleryPolicy[] = [
-    { galleryId: 1, rotationMode: "random", minInterval: 900, maxInterval: 900 },
+    {
+      galleryId: 1,
+      rules: [
+        {
+          id: 1,
+          days: 127,
+          startMinute: 0,
+          endMinute: 1440,
+          minInterval: 900,
+          maxInterval: 900,
+          priority: 0,
+          rotationMode: "random",
+        },
+      ],
+    },
   ];
   const policy = {
     syncInterval: 3600,
@@ -420,7 +448,21 @@ test("the pinned picture takes the place of whatever would have been shown", () 
     { photoId: 1, contentHash: "old", weight: 1, belongsTo: 1 },
   ];
   const galleries: GalleryPolicy[] = [
-    { galleryId: 1, rotationMode: "random", minInterval: 900, maxInterval: 900 },
+    {
+      galleryId: 1,
+      rules: [
+        {
+          id: 1,
+          days: 127,
+          startMinute: 0,
+          endMinute: 1440,
+          minInterval: 900,
+          maxInterval: 900,
+          priority: 0,
+          rotationMode: "random",
+        },
+      ],
+    },
   ];
   const policy = {
     syncInterval: 3600,
@@ -485,7 +527,21 @@ test("a plan that already has the pinned moment is not given it twice", () => {
     { photoId: 2, contentHash: "pinned", weight: 1, belongsTo: 1 },
   ];
   const galleries: GalleryPolicy[] = [
-    { galleryId: 1, rotationMode: "random", minInterval: 900, maxInterval: 900 },
+    {
+      galleryId: 1,
+      rules: [
+        {
+          id: 1,
+          days: 127,
+          startMinute: 0,
+          endMinute: 1440,
+          minInterval: 900,
+          maxInterval: 900,
+          priority: 0,
+          rotationMode: "random",
+        },
+      ],
+    },
   ];
   const policy = {
     syncInterval: 3600,
@@ -521,7 +577,21 @@ test("a pinned picture outside the window is not shown in it", () => {  const ca
     { photoId: 1, contentHash: "old", weight: 1, belongsTo: 1 },
   ];
   const galleries: GalleryPolicy[] = [
-    { galleryId: 1, rotationMode: "random", minInterval: 900, maxInterval: 900 },
+    {
+      galleryId: 1,
+      rules: [
+        {
+          id: 1,
+          days: 127,
+          startMinute: 0,
+          endMinute: 1440,
+          minInterval: 900,
+          maxInterval: 900,
+          priority: 0,
+          rotationMode: "random",
+        },
+      ],
+    },
   ];
   const policy = {
     syncInterval: 3600,

@@ -704,4 +704,38 @@ CREATE TABLE gallery_manual_pictures (
 );
 `,
   },
+  {
+    id: "0018_rule_rotation",
+    sql: `
+-- How a rule picks its pictures, and how often it changes.
+--
+-- The gap between two pictures is said by the rules now, in the unit the
+-- owner chose, so the gallery's own gap goes.
+--
+-- The way the pictures are picked is said by the rules as well. A
+-- gallery can show its pictures in order by day and pick them at random
+-- at night, which is not something a single setting on the gallery can
+-- say.
+--
+-- The rules that already existed become rules that cover every day, so
+-- that a gallery that was set up before this change keeps working the
+-- way it did.
+INSERT INTO gallery_schedule_rules
+  (gallery_id, days, start_minute, end_minute, min_interval, max_interval, priority)
+SELECT id, 127, 0, 1440, min_interval, max_interval, 0
+  FROM galleries
+ WHERE min_interval IS NOT NULL;
+
+ALTER TABLE gallery_schedule_rules ADD COLUMN rotation_mode TEXT NOT NULL DEFAULT 'random';
+
+UPDATE gallery_schedule_rules
+   SET rotation_mode = (
+     SELECT g.rotation_mode FROM galleries g WHERE g.id = gallery_schedule_rules.gallery_id
+   );
+
+ALTER TABLE galleries DROP COLUMN min_interval;
+ALTER TABLE galleries DROP COLUMN max_interval;
+ALTER TABLE galleries DROP COLUMN rotation_mode;
+`,
+  },
 ];

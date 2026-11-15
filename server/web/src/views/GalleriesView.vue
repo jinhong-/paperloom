@@ -9,7 +9,6 @@ import {
   TONE_PRESETS,
 } from "@/api";
 import GallerySchedule, { type DraftRule } from "@/components/GallerySchedule.vue";
-import { describeInterval } from "@/lib/syncRules";
 import { useSessionStore } from "@/stores/session";
 
 const session = useSessionStore();
@@ -33,9 +32,6 @@ const manualPhotoId = ref<number | null>(null);
 const telegramMode = ref<"queue" | "latest">("queue");
 
 const newName = ref("");
-const newMode = ref<"random" | "sequential">("random");
-const newMin = ref(900);
-const newMax = ref(21600);
 
 /* The schedule of a gallery being made, using the same editor as an
  * existing one. */
@@ -119,6 +115,7 @@ function loadDrafts(from: GalleryScheduleRule[]): void {
       rule.min_interval === null && rule.max_interval === null
         ? null
         : (rule.max_interval ?? rule.min_interval ?? 0),
+    rotationMode: rule.rotation_mode,
   }));
 }
 
@@ -164,6 +161,7 @@ async function saveRules(drafts: DraftRule[]): Promise<void> {
         end_minute: draft.endMinute,
         min_interval: draft.intervalSeconds,
         max_interval: draft.intervalSeconds,
+        rotation_mode: draft.rotationMode,
       };
 
       if (draft.id === undefined) {
@@ -225,33 +223,26 @@ async function setTelegramMode(mode: "queue" | "latest"): Promise<void> {
 
 /**
  * Create a gallery.
+ *
+ * The schedule is made with the gallery, so that a gallery is made the
+ * way it is going to be used rather than being left half set up.
  */
 async function createGallery(): Promise<void> {
   if (!newName.value.trim()) return;
   error.value = null;
   try {
-    const created = await api.createGallery({
+    await api.createGallery({
       name: newName.value.trim(),
-      rotation_mode: newMode.value,
-      min_interval: newMin.value,
-      max_interval: newMax.value,
-    });
-
-    /* The schedule is saved straight away, so that a gallery is made the
-     * way it is going to be used rather than being left half set up. */
-    await api.updateGallery(created.id, {
-      schedule_enabled: newEnabled.value ? 1 : 0,
-    });
-
-    for (const draft of newRules.value) {
-      await api.addGalleryScheduleRule(created.id, {
+      schedule_enabled: newEnabled.value,
+      rules: newRules.value.map((draft) => ({
         days: draft.days,
         start_minute: draft.startMinute,
         end_minute: draft.endMinute,
         min_interval: draft.intervalSeconds,
         max_interval: draft.intervalSeconds,
-      });
-    }
+        rotation_mode: draft.rotationMode,
+      })),
+    });
 
     newName.value = "";
     newRules.value = [];
@@ -368,15 +359,12 @@ onMounted(async () => {
           <div class="grow">
             <strong>{{ item.name }}</strong>
             <div class="small muted">
-              {{ item.photo_count }} photo{{ item.photo_count === 1 ? "" : "s" }} ·
-              {{ item.rotation_mode }}
+              {{ item.photo_count }} photo{{ item.photo_count === 1 ? "" : "s" }}
               <template v-if="!item.schedule_enabled">
-                · off
+                · off, showing one picture
               </template>
-              <template v-else-if="item.rotation_mode === 'random'">
-                · every {{ describeInterval(item.min_interval) }}–{{
-                  describeInterval(item.max_interval)
-                }}
+              <template v-else>
+                · {{ item.rule_count }} rule{{ item.rule_count === 1 ? "" : "s" }}
               </template>
             </div>
           </div>
@@ -397,25 +385,6 @@ onMounted(async () => {
         <div class="field">
           <label for="gallery-name">Name</label>
           <input id="gallery-name" v-model="newName" placeholder="Living room" />
-        </div>
-        <div class="grid-2">
-          <div class="field">
-            <label for="gallery-mode">Rotation</label>
-            <select id="gallery-mode" v-model="newMode">
-              <option value="random">Random</option>
-              <option value="sequential">Sequential</option>
-            </select>
-          </div>
-          <div class="field">
-            <label for="gallery-min">Minimum gap (seconds)</label>
-            <input id="gallery-min" v-model.number="newMin" type="number" min="60" />
-            <div class="small muted">That is every {{ describeInterval(newMin) }}.</div>
-          </div>
-        </div>
-        <div class="field">
-          <label for="gallery-max">Maximum gap (seconds)</label>
-          <input id="gallery-max" v-model.number="newMax" type="number" min="60" />
-          <div class="small muted">That is every {{ describeInterval(newMax) }}.</div>
         </div>
 
         <!-- The same schedule editor an existing gallery has, so that the
@@ -486,6 +455,14 @@ onMounted(async () => {
               <template v-else>not rendered</template>
             </div>
           </div>
+          <button
+            class="secondary"
+            :disabled="busy"
+            :title="manualPhotoId === photo.id ? 'This is the picture it shows' : 'Show this one'"
+            @click="setManualPicture(photo.id)"
+          >
+            {{ manualPhotoId === photo.id ? "Showing" : "Show this one" }}
+          </button>
           <button class="danger" @click="removePhoto(photo)">Delete</button>
         </div>
 
@@ -534,12 +511,19 @@ onMounted(async () => {
         </div>
 
         <!-- The picture shown while the gallery is off -->
-        <div v-if="!scheduleEnabled" class="card">
+        <div class="card">
           <h3>The picture it shows</h3>
           <p class="small muted">
-            The gallery is off, so it shows this picture until you set
-            another one. The frame keeps it when it is turned off and on
-            again.
+            <template v-if="scheduleEnabled">
+              The gallery changes on its own schedule, but you can say which
+              picture it shows at any time by choosing one below. It stays
+              until you choose another.
+            </template>
+            <template v-else>
+              The gallery is off, so it shows this picture until you set
+              another one. The frame keeps it when it is turned off and on
+              again.
+            </template>
           </p>
 
           <div v-if="photos.length === 0" class="empty">

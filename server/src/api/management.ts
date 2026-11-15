@@ -27,6 +27,22 @@ export interface ManagementOptions {
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
+/**
+ * A rule about when a gallery changes its picture, and how.
+ *
+ * The gap between two pictures and the way the pictures are picked are
+ * both said by the rule.
+ */
+interface GalleryRuleBody {
+  days?: number;
+  start_minute?: number;
+  end_minute?: number;
+  min_interval?: number | null;
+  max_interval?: number | null;
+  priority?: number;
+  rotation_mode?: "random" | "sequential";
+}
+
 export function registerManagementApi(app: FastifyInstance, options: ManagementOptions): void {
   const { db, assets, schedules, basePath } = options;
 
@@ -88,6 +104,7 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
     end_minute?: number;
     min_interval?: number | null;
     max_interval?: number | null;
+    rotation_mode?: "random" | "sequential";
   }): boolean {
     if (body.days !== undefined && (!Number.isInteger(body.days) || body.days < 0 || body.days > 127)) {
       return false;
@@ -102,7 +119,35 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       if (value === undefined || value === null) continue;
       if (!Number.isFinite(value) || value < 60 || value > 604_800) return false;
     }
+    if (
+      body.rotation_mode !== undefined &&
+      body.rotation_mode !== "random" &&
+      body.rotation_mode !== "sequential"
+    ) {
+      return false;
+    }
     return true;
+  }
+
+  /**
+   * Add a rule to a gallery.
+   */
+  function insertRule(galleryId: number, body: GalleryRuleBody): void {
+    db.prepare(
+      `INSERT INTO gallery_schedule_rules
+         (gallery_id, days, start_minute, end_minute, min_interval, max_interval,
+          priority, rotation_mode)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      galleryId,
+      body.days ?? 127,
+      body.start_minute ?? 0,
+      body.end_minute ?? 1440,
+      body.min_interval ?? null,
+      body.max_interval ?? null,
+      body.priority ?? 0,
+      body.rotation_mode ?? "random",
+    );
   }
 
   // ---------------------------------------------------------------------
@@ -393,7 +438,7 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
 
     const galleries = db
       .prepare(
-        `SELECT g.id, g.name, g.rotation_mode, g.min_interval, g.max_interval,
+        `SELECT g.id, g.name,
                 g.quiet_start, g.quiet_end, g.enabled, g.tone_preset, g.telegram_mode,
                 g.schedule_enabled,
                 (SELECT COUNT(*) FROM photos p WHERE p.gallery_id = g.id) AS photo_count,
@@ -415,39 +460,34 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
 
     const body = request.body as {
       name?: string;
-      rotation_mode?: "random" | "sequential";
-      min_interval?: number;
-      max_interval?: number;
+      schedule_enabled?: boolean;
+      rules?: GalleryRuleBody[];
     };
     if (!body?.name) {
       await reply.code(400).send({ error: "name is required" });
       return;
     }
 
-    /* The intervals have to be sensible: see the update route. */
-    for (const key of ["min_interval", "max_interval"] as const) {
-      const value = body[key];
-      if (value === undefined) continue;
-      if (!Number.isFinite(value) || value < 60 || value > 604_800) {
-        await reply.code(400).send({
-          error: `${key} must be between 60 seconds and a week`,
-        });
+    const result = db
+      .prepare("INSERT INTO galleries (user_id, name) VALUES (?, ?)")
+      .run(userId, body.name);
+
+    const galleryId = Number(result.lastInsertRowid);
+
+    /* The rules say how often the gallery changes and how the pictures are
+     * picked, and they are made with the gallery so that it is made the
+     * way it is going to be used. */
+    for (const rule of body.rules ?? []) {
+      if (!validRule(rule)) {
+        await reply.code(400).send({ error: "the rule does not make sense" });
         return;
       }
+      insertRule(galleryId, rule);
     }
 
-    const result = db
-      .prepare(
-        `INSERT INTO galleries (user_id, name, rotation_mode, min_interval, max_interval)
-         VALUES (?, ?, ?, ?, ?)`,
-      )
-      .run(
-        userId,
-        body.name,
-        body.rotation_mode ?? "random",
-        body.min_interval ?? 900,
-        body.max_interval ?? 21600,
-      );
+    if (body.schedule_enabled === false) {
+      db.prepare("UPDATE galleries SET schedule_enabled = 0 WHERE id = ?").run(galleryId);
+    }
 
     await reply.send({ id: Number(result.lastInsertRowid) });
   });
@@ -467,9 +507,6 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
 
     const body = request.body as Partial<{
       name: string;
-      rotation_mode: "random" | "sequential";
-      min_interval: number;
-      max_interval: number;
       quiet_start: number | null;
       quiet_end: number | null;
       enabled: boolean;
@@ -488,23 +525,6 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
     if (body.telegram_mode !== undefined && body.telegram_mode !== "queue" && body.telegram_mode !== "latest") {
       await reply.code(400).send({ error: "unknown way of receiving pictures" });
       return;
-    }
-
-    /* The intervals have to be sensible.
-     *
-     * A gallery that changes every second would fill a plan with tens of
-     * thousands of events, and the plan is sent to a frame over the
-     * network. A minute is the shortest gap that makes sense, and a week
-     * is longer than any gap anybody wants. */
-    for (const key of ["min_interval", "max_interval"] as const) {
-      const value = body[key];
-      if (value === undefined) continue;
-      if (!Number.isFinite(value) || value < 60 || value > 604_800) {
-        await reply.code(400).send({
-          error: `${key} must be between 60 seconds and a week`,
-        });
-        return;
-      }
     }
 
     const fields: string[] = [];
@@ -566,6 +586,7 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
         min_interval: rule.minInterval,
         max_interval: rule.maxInterval,
         priority: rule.priority,
+        rotation_mode: rule.rotationMode,
       })),
     );
   });
@@ -586,39 +607,18 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       return;
     }
 
-    const body = request.body as {
-      days?: number;
-      start_minute?: number;
-      end_minute?: number;
-      min_interval?: number | null;
-      max_interval?: number | null;
-      priority?: number;
-    };
+    const body = request.body as GalleryRuleBody;
 
     if (!validRule(body)) {
       await reply.code(400).send({ error: "the rule does not make sense" });
       return;
     }
 
-    const result = db
-      .prepare(
-        `INSERT INTO gallery_schedule_rules
-           (gallery_id, days, start_minute, end_minute, min_interval, max_interval, priority)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        Number(id),
-        body.days ?? 127,
-        body.start_minute ?? 0,
-        body.end_minute ?? 1440,
-        body.min_interval ?? null,
-        body.max_interval ?? null,
-        body.priority ?? 0,
-      );
+    insertRule(Number(id), body);
 
     invalidateGallery(Number(id));
 
-    await reply.send({ status: "ok", id: Number(result.lastInsertRowid) });
+    await reply.send({ status: "ok" });
   });
 
   /**
@@ -637,14 +637,7 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       return;
     }
 
-    const body = request.body as {
-      days?: number;
-      start_minute?: number;
-      end_minute?: number;
-      min_interval?: number | null;
-      max_interval?: number | null;
-      priority?: number;
-    };
+    const body = request.body as GalleryRuleBody;
 
     if (!validRule(body)) {
       await reply.code(400).send({ error: "the rule does not make sense" });

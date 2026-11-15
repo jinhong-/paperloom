@@ -35,6 +35,8 @@ export interface DraftRule {
   endMinute: number;
   /** How often the picture changes, in seconds. Null means the gallery is still. */
   intervalSeconds: number | null;
+  /** How the pictures are picked. */
+  rotationMode: "random" | "sequential";
 }
 
 const props = defineProps<{
@@ -56,6 +58,7 @@ const endMinute = ref(1440);
 const count = ref(60);
 const unit = ref<FrequencyUnit>("minutes");
 const still = ref(false);
+const rotationMode = ref<"random" | "sequential">("random");
 
 /* The hours of the rule being written, as they are typed. */
 const startText = ref("00:00");
@@ -140,6 +143,7 @@ function addRule(): void {
     startMinute: startMinute.value,
     endMinute: endMinute.value,
     intervalSeconds: still.value ? null : frequencyInSeconds(count.value, unit.value),
+    rotationMode: rotationMode.value,
   };
 
   emit("update:rules", [...props.rules, rule]);
@@ -183,6 +187,13 @@ function describeRuleInterval(rule: DraftRule): string {
 
   const minutes = Math.round(rule.intervalSeconds / 60);
   return `every ${minutes} ${describeUnit("minutes", minutes)}`;
+}
+
+/**
+ * How the pictures of a rule are picked, as they are written.
+ */
+function describeRuleRotation(rule: DraftRule): string {
+  return rule.rotationMode === "sequential" ? "in order" : "at random";
 }
 
 /**
@@ -232,7 +243,8 @@ watch(
 
   <template v-if="enabled">
     <div v-if="rules.length === 0" class="empty">
-      No rules. The gallery changes at the pace set above, all day.
+      No rules. Nothing is scheduled, so the gallery shows nothing until a
+      rule is added.
     </div>
 
     <div
@@ -244,7 +256,8 @@ watch(
       <div class="grow">
         <strong>{{ describeRuleHours(rule) }}</strong>
         <div class="small muted">
-          {{ describeRuleDays(rule) }} · {{ describeRuleInterval(rule) }}
+          {{ describeRuleDays(rule) }} · {{ describeRuleInterval(rule) }} ·
+          {{ describeRuleRotation(rule) }}
         </div>
       </div>
       <button class="danger" @click="removeRule(index)">Remove</button>
@@ -298,6 +311,24 @@ watch(
             <option value="hours">hours</option>
             <option value="days">days</option>
           </select>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="rule-rotation">How the pictures are picked</label>
+        <select id="rule-rotation" v-model="rotationMode">
+          <option value="random">At random</option>
+          <option value="sequential">In order, one after another</option>
+        </select>
+        <div class="small muted">
+          <template v-if="rotationMode === 'random'">
+            Each picture is picked at random, weighted by how much you want
+            it to be seen.
+          </template>
+          <template v-else>
+            The pictures are shown in order, and the gallery starts again
+            from the first when it runs out.
+          </template>
         </div>
       </div>
 

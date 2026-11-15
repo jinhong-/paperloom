@@ -52,11 +52,18 @@ async function makeWorld(): Promise<{
   const galleryId = Number(
     db
       .prepare(
-        `INSERT INTO galleries (user_id, name, rotation_mode, min_interval, max_interval)
-         VALUES (?, 'Gallery', 'random', 900, 900)`,
+        `INSERT INTO galleries (user_id, name) VALUES (?, \'Gallery\')`,
       )
       .run(user.id).lastInsertRowid,
   );
+
+  /* The rules say how often the gallery changes and how the pictures are
+   * picked, so a gallery needs one to change at all. */
+  db.prepare(
+    `INSERT INTO gallery_schedule_rules
+       (gallery_id, days, start_minute, end_minute, min_interval, max_interval, rotation_mode)
+     VALUES (?, 127, 0, 1440, 900, 900, 'random')`,
+  ).run(galleryId);
 
   /* A frame, so that a plan can be made for it. */
   db.prepare("INSERT INTO devices (user_id, name, device_id) VALUES (?, 'Frame', 'dev-1')").run(

@@ -9,9 +9,6 @@
 export interface Gallery {
   id: number;
   name: string;
-  rotation_mode: "random" | "sequential";
-  min_interval: number;
-  max_interval: number;
   quiet_start: number | null;
   quiet_end: number | null;
   enabled: number;
@@ -24,10 +21,12 @@ export interface Gallery {
   /** The picture shown when the gallery is off, if there is one. */
   manual_photo_id: number | null;
   photo_count: number;
+  /** How many rules the gallery has. */
+  rule_count: number;
 }
 
 /**
- * A rule saying when a gallery changes its picture.
+ * A rule saying when a gallery changes its picture, and how.
  */
 export interface GalleryScheduleRule {
   id: number;
@@ -43,6 +42,8 @@ export interface GalleryScheduleRule {
   max_interval: number | null;
   /** Lower numbers win when several rules cover the same moment. */
   priority: number;
+  /** How the pictures of this rule are picked. */
+  rotation_mode: "random" | "sequential";
 }
 
 /**
@@ -322,9 +323,16 @@ export const api = {
 
   createGallery: (body: {
     name: string;
-    rotation_mode?: "random" | "sequential";
-    min_interval?: number;
-    max_interval?: number;
+    schedule_enabled?: boolean;
+    rules?: Array<{
+      days?: number;
+      start_minute?: number;
+      end_minute?: number;
+      min_interval?: number | null;
+      max_interval?: number | null;
+      priority?: number;
+      rotation_mode?: "random" | "sequential";
+    }>;
   }) =>
     request<{ id: number }>("/api/galleries", {
       method: "POST",
@@ -354,6 +362,7 @@ export const api = {
       min_interval?: number | null;
       max_interval?: number | null;
       priority?: number;
+      rotation_mode?: "random" | "sequential";
     },
   ) =>
     request<{ status: string; id: number }>(

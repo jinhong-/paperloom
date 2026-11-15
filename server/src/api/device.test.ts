@@ -49,11 +49,18 @@ async function seedGallery(server: BuiltServer): Promise<{ galleryId: number; co
   const galleryId = Number(
     db
       .prepare(
-        `INSERT INTO galleries (user_id, name, rotation_mode, min_interval, max_interval)
-         VALUES (?, 'Test', 'sequential', 3600, 3600)`,
+        `INSERT INTO galleries (user_id, name) VALUES (?, \'Test\')`,
       )
       .run(userId).lastInsertRowid,
   );
+
+  /* The rules say how often the gallery changes and how the pictures are
+   * picked, so a gallery needs one to change at all. */
+  db.prepare(
+    `INSERT INTO gallery_schedule_rules
+       (gallery_id, days, start_minute, end_minute, min_interval, max_interval, rotation_mode)
+     VALUES (?, 127, 0, 1440, 3600, 3600, 'random')`,
+  ).run(galleryId);
 
   // A minimal but valid asset: gzip of an all-white 4bpp frame would be
   // enormous, so use a short one. The device API only cares that the hash
@@ -766,9 +773,9 @@ test("the plan grows rather than being replaced", async (t) => {
   db.prepare("UPDATE devices SET gallery_id = ? WHERE id = ?").run(galleryId, deviceRowId);
   /* A short interval, so that the plan holds events close together and
    * the extension is visible. */
-  db.prepare("UPDATE galleries SET min_interval = 60, max_interval = 60 WHERE id = ?").run(
-    galleryId,
-  );
+  db.prepare(
+    "UPDATE gallery_schedule_rules SET min_interval = 60, max_interval = 60 WHERE gallery_id = ?",
+  ).run(galleryId);
   db.prepare(
     `INSERT INTO device_policies (device_id, sync_interval, lookahead) VALUES (?, 3600, 10800)`,
   ).run(deviceRowId);
