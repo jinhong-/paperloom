@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/jinhong-/paperloom/compare/paperloom-web-v0.4.1...paperloom-web-v0.5.0) (2026-11-15)
+
+
+### Chores
+
+* **paperloom-web:** Synchronize paperloom versions
+
 ## [0.4.1](https://github.com/jinhong-/paperloom/compare/paperloom-web-v0.4.0...paperloom-web-v0.4.1) (2026-11-15)
 
 
