@@ -28,7 +28,7 @@ FROM node:22-bookworm-slim AS runtime
 ENV NODE_ENV=production \
     PAPERLOOM_HOST=0.0.0.0 \
     PAPERLOOM_PORT=8099 \
-    PAPERLOOM_DATA_DIR=/share/paperloom
+    PAPERLOOM_DATA_DIR=/data/paperloom
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 make g++ tini \
