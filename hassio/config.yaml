@@ -1,6 +1,6 @@
-﻿name: Paperloom
+name: Paperloom
 slug: paperloom
-version: 0.3.1
+version: 0.4.0
 description: Self-hosted server for Paperloom e-paper photo frames
 url: https://github.com/jinhong-/paperloom
 startup: application
@@ -28,4 +28,3 @@ environment:
   PAPERLOOM_DATA_DIR: /data/paperloom
   PAPERLOOM_LOG_LEVEL: info
   PAPERLOOM_TELEGRAM_POLL_INTERVAL: '3'
-

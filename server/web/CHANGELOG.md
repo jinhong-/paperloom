@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/jinhong-/paperloom/compare/paperloom-web-v0.3.1...paperloom-web-v0.4.0) (2026-11-15)
+
+
+### Chores
+
+* release 0.4.0 ([288af9d](https://github.com/jinhong-/paperloom/commit/288af9dca61ddcc18327f14019310137dda1d93c))
+
 ## [0.3.1](https://github.com/jinhong-/paperloom/compare/paperloom-web-v0.3.0...paperloom-web-v0.3.1) (2026-11-15)
 
 
