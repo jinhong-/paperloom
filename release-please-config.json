@@ -14,6 +14,13 @@
     { "type": "ci", "section": "Continuous Integration" },
     { "type": "chore", "section": "Chores" }
   ],
+  "plugins": [
+    {
+      "type": "linked-versions",
+      "groupName": "paperloom",
+      "components": ["paperloom-web", "paperloom-hassio"]
+    }
+  ],
   "packages": {
     "server/web": {
       "release-type": "node",
@@ -24,7 +31,16 @@
           "type": "json",
           "path": "server/web/package.json",
           "jsonpath": "$.version"
-        },
+        }
+      ]
+    },
+    "hassio": {
+      "release-type": "simple",
+      "package-name": "paperloom-hassio",
+      "changelog-path": "CHANGELOG.md",
+      "skip-github-release": true,
+      "version-file": "config.yaml",
+      "extra-files": [
         {
           "type": "yaml",
           "path": "hassio/config.yaml",
