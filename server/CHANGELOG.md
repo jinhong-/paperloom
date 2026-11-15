@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/jinhong-/paperloom/compare/paperloom-server-v0.2.1...paperloom-server-v0.2.2) (2026-11-15)
+
+
+### Bug Fixes
+
+* a picture that was replaced is not shown ([b9e0fe4](https://github.com/jinhong-/paperloom/commit/b9e0fe4c5fff3fec3786b3541b354827c41c49a5))
+
 ## [0.2.1](https://github.com/jinhong-/paperloom/compare/paperloom-server-v0.2.0...paperloom-server-v0.2.1) (2026-11-15)
 
 

@@ -1,5 +1,5 @@
 {
-  "server": "0.2.1",
+  "server": "0.2.2",
   "firmware": "0.2.0",
   "server/web": "0.5.2",
   "hassio": "0.5.2"
