@@ -630,6 +630,39 @@ export class ScheduleService {
   }
 
   /**
+   * The next moment the frame wakes up.
+   *
+   * A frame wakes for two reasons: a picture is due, or it is time to
+   * check in with the server. It wakes for whichever comes first.
+   *
+   * This is where a picture asked for by hand belongs: the frame shows
+   * it at the next moment it wakes, rather than at the next check-in,
+   * which may be an hour away.
+   */
+  nextWake(deviceId: number, at: number): number {
+    const checkIn = this.nextCheckIn(deviceId, at);
+    const event = this.nextEventAt(deviceId, at);
+    return event === null ? checkIn : Math.min(checkIn, event);
+  }
+
+  /**
+   * The next moment the frame's plan has a picture due.
+   *
+   * This is null when the plan has nothing left to show, which is what a
+   * gallery that is turned off and has nothing asked of it looks like.
+   */
+  private nextEventAt(deviceId: number, at: number): number | null {
+    const current = this.currentPlan(deviceId);
+    if (!current) return null;
+
+    for (const item of current.items) {
+      if (item.at > at) return item.at;
+    }
+
+    return null;
+  }
+
+  /**
    * The next moment a rule covers, or null if none ever does.
    *
    * The search looks a week ahead, which is enough because a rule names

@@ -139,6 +139,19 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
   }
 
   /**
+   * The frames that show a gallery.
+   *
+   * A gallery may be shown by more than one frame, and each of them is
+   * asked for the picture separately.
+   */
+  function deviceIdOf(galleryId: number): number {
+    const row = db
+      .prepare("SELECT id FROM devices WHERE gallery_id = ? ORDER BY id LIMIT 1")
+      .get(galleryId) as { id: number } | undefined;
+    return row?.id ?? 0;
+  }
+
+  /**
    * Add a rule to a gallery.
    *
    * There can only be one rule that covers every moment. Such a rule
@@ -859,12 +872,10 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       return;
     }
 
-    const made = pins.pinForGallery(Number(id), photo.id, Date.now());
-    for (const pin of made) {
-      schedules.addPinnedEvent(pin.device_id, pin.at, pin.photo_id);
-    }
+    const made = pins.pinForOwner(deviceIdOf(Number(id)), photo.id, Date.now());
+    schedules.addPinnedEvent(made.device_id, made.at, made.photo_id);
 
-    await reply.send({ status: "ok", shown_at: made[0]?.at ?? null });
+    await reply.send({ status: "ok", shown_at: made.at });
   });
 
   /**

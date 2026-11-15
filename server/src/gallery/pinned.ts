@@ -73,6 +73,49 @@ export class PinnedPhotoService {
   }
 
   /**
+   * Pin a picture that the owner has asked for by hand.
+   *
+   * The picture is shown at the next moment the frame wakes, which is
+   * whichever comes first of a picture being due and a check-in. The
+   * owner is looking at the frame and has said what they want to see, so
+   * it is shown at the first chance rather than at the next check-in,
+   * which may be an hour away.
+   *
+   * A picture that is already waiting is replaced, because the owner is
+   * looking at the frame now and this is the picture they want.
+   */
+  pinForOwner(deviceId: number, photoId: number, now: number): PinnedPhoto {
+    const { db } = this.options;
+
+    /* The picture that is waiting is replaced. */
+    const waiting = db
+      .prepare(
+        `SELECT id, at FROM pinned_photos
+         WHERE device_id = ? AND shown = 0
+         ORDER BY at ASC LIMIT 1`,
+      )
+      .get(deviceId) as { id: number; at: number } | undefined;
+
+    if (waiting !== undefined) {
+      db.prepare("DELETE FROM pinned_photos WHERE device_id = ? AND shown = 0").run(deviceId);
+    }
+
+    const at = this.options.schedules.nextWake(deviceId, now);
+
+    const result = db
+      .prepare("INSERT INTO pinned_photos (device_id, photo_id, at) VALUES (?, ?, ?)")
+      .run(deviceId, photoId, at);
+
+    return {
+      id: Number(result.lastInsertRowid),
+      device_id: deviceId,
+      photo_id: photoId,
+      at,
+      shown: false,
+    };
+  }
+
+  /**
    * Pin a picture to a frame.
    *
    * There are two ways the pictures can arrive.

@@ -313,6 +313,58 @@ test("a picture can be asked for by hand, and is shown next", async (t) => {
   assert.equal((after.json() as { pictures: unknown[] }).pictures.length, 0);
 });
 
+test("a pin is not marked shown before its moment", async (t) => {
+  const server = await makeServer();
+  t.after(async () => {
+    await server.app.close();
+  });
+
+  const cookie = await signIn(server);
+
+  const created = await server.app.inject({
+    method: "POST",
+    url: "/api/galleries",
+    headers: { cookie },
+    payload: { name: "Gallery" },
+  });
+  const galleryId = (created.json() as { id: number }).id;
+
+  server.db
+    .prepare(
+      `INSERT INTO photos (gallery_id, filename, source_hash, content_hash, width, height, byte_size, weight)
+       VALUES (?, 'a.png', 'src', 'hash-a', 1200, 1600, 10, 1.0)`,
+    )
+    .run(galleryId);
+  server.db
+    .prepare("INSERT INTO devices (user_id, name, device_id) VALUES (1, 'Frame', 'dev-1')")
+    .run();
+  const deviceId = (
+    server.db.prepare("SELECT id FROM devices WHERE device_id = 'dev-1'").get() as { id: number }
+  ).id;
+  server.db
+    .prepare("UPDATE devices SET gallery_id = ? WHERE id = ?")
+    .run(galleryId, deviceId);
+  server.db.prepare("INSERT INTO device_policies (device_id) VALUES (?)").run(deviceId);
+
+  /* A picture asked for, for a moment well in the future. */
+  server.db
+    .prepare(
+      `INSERT INTO pinned_photos (device_id, photo_id, at) VALUES (?, ?, ?)`,
+    )
+    .run(deviceId, 1, Date.now() + 60 * 60 * 1000);
+
+  /* The frame says it is showing that picture, which it did earlier in
+   * the rotation, before the picture was asked for. It has not shown the
+   * one that was asked for. */
+  const { markPinShown } = await import("./device.js");
+  markPinShown(server.db, deviceId, "hash-a");
+
+  const pin = server.db
+    .prepare("SELECT shown FROM pinned_photos WHERE device_id = ?")
+    .get(deviceId) as { shown: number };
+  assert.equal(pin.shown, 0, "a pin must not be marked shown before its moment");
+});
+
 test("there can only be one rule that covers every moment", async (t) => {
   const server = await makeServer();
   t.after(async () => {

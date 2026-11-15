@@ -63,8 +63,13 @@ const BATTERY_ASSET_LIMIT = 4;
  *
  * The pin is finished with when the frame says it has put that picture on
  * the panel, which is the only proof that the picture was actually seen.
+ *
+ * The picture has to be the one that was asked for, and the frame has to
+ * be past the moment it was asked for. A frame that says it is showing a
+ * picture it showed earlier, before the picture was asked for, has not
+ * shown the one that was asked for.
  */
-function markPinShown(db: Db, deviceId: number, displayedAsset: string): void {
+export function markPinShown(db: Db, deviceId: number, displayedAsset: string): void {
   const pin = db
     .prepare(
       `SELECT pp.id FROM pinned_photos pp
@@ -72,10 +77,10 @@ function markPinShown(db: Db, deviceId: number, displayedAsset: string): void {
        LEFT JOIN photo_assets pa ON pa.photo_id = pp.photo_id AND pa.rotation = (
          SELECT rotation FROM devices WHERE id = ?
        )
-       WHERE pp.device_id = ? AND pp.shown = 0
+       WHERE pp.device_id = ? AND pp.shown = 0 AND pp.at <= ?
          AND COALESCE(pa.content_hash, p.content_hash) = ?`,
     )
-    .get(deviceId, deviceId, displayedAsset) as { id: number } | undefined;
+    .get(deviceId, deviceId, Date.now(), displayedAsset) as { id: number } | undefined;
 
   if (!pin) return;
 
