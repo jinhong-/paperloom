@@ -294,8 +294,12 @@ static char s_claim_code[32] = {0};
 
 /**
  * The claim URL from the last enrolment.
+ *
+ * It is the address of the server with the path the server gave, so it
+ * is a URL that can be opened. The server's address is up to 256 bytes,
+ * so the URL is given room for that and a path.
  */
-static char s_claim_url[160] = {0};
+static char s_claim_url[512] = {0};
 
 /**
  * Where the owner manages the frame.
@@ -304,7 +308,34 @@ static char s_claim_url[160] = {0};
  * been claimed but has no photos to show yet, so that the owner knows
  * where to go to add some.
  */
-static char s_dashboard_url[192] = {0};
+static char s_dashboard_url[512] = {0};
+
+/**
+ * Put a server address and a path together into a URL.
+ *
+ * The server sends a path, and the frame knows the address of the
+ * server, so the two are joined here. A path on its own is not something
+ * anybody can open, and the frame shows these as a QR code for the owner
+ * to scan.
+ *
+ * @param out      Where to write the URL.
+ * @param out_len  The size of that buffer.
+ * @param path     The path the server gave.
+ */
+static void url_from_server(char *out, size_t out_len, const char *path) {
+    if (path == NULL || path[0] == '\0') {
+        out[0] = '\0';
+        return;
+    }
+
+    /* A path that is already a whole address is used as it is. */
+    if (path[0] != '/') {
+        snprintf(out, out_len, "%s", path);
+        return;
+    }
+
+    snprintf(out, out_len, "%s%s", s_server_url, path);
+}
 
 /**
  * Whether the server last rejected a request because the clock was out
@@ -452,6 +483,15 @@ esp_err_t sync_init(void) {
     nvs_read_string(NVS_KEY_DEVICE_ID, s_device_id, sizeof(s_device_id));
     nvs_read_string(NVS_KEY_NEXT_SYNC, s_next_sync_at, sizeof(s_next_sync_at));
 
+    /* A trailing slash is taken off, so that the address can be joined
+     * with a path without there being two slashes in the middle. One may
+     * have been stored before, by an owner who typed it on the setup
+     * page. */
+    size_t length = strlen(s_server_url);
+    while (length > 0 && s_server_url[length - 1] == '/') {
+        s_server_url[--length] = '\0';
+    }
+
     /* The device needs an id even before it is set up, because the id is
      * part of the request signature. */
     esp_err_t err = sync_ensure_device_id();
@@ -573,7 +613,11 @@ bool sync_enrol(char *claim_code, size_t claim_code_len, char *claim_url, size_t
     }
 
     if (cJSON_IsString(url) && url->valuestring != NULL) {
-        snprintf(s_claim_url, sizeof(s_claim_url), "%s", url->valuestring);
+        /* The server sends a path, and the frame knows the address of the
+         * server, so the two are put together here. A path on its own is
+         * not something anybody can open, and the QR code has to point
+         * at the page the owner uses to claim the frame. */
+        url_from_server(s_claim_url, sizeof(s_claim_url), url->valuestring);
         if (claim_url != NULL && claim_url_len > 0) {
             snprintf(claim_url, claim_url_len, "%s", s_claim_url);
         }
@@ -753,9 +797,20 @@ const char *sync_device_id(void) {
 
 /**
  * Store the server URL.
+ *
+ * A trailing slash is taken off, so that the address can be joined with a
+ * path without there being two slashes in the middle. The owner types
+ * the address on the setup page, and a slash at the end of it is easy to
+ * type and would otherwise break every request.
  */
 esp_err_t sync_set_server_url(const char *url) {
     snprintf(s_server_url, sizeof(s_server_url), "%s", url);
+
+    size_t length = strlen(s_server_url);
+    while (length > 0 && s_server_url[length - 1] == '/') {
+        s_server_url[--length] = '\0';
+    }
+
     if (!nvs_write_string(NVS_KEY_SERVER_URL, s_server_url)) {
         return ESP_FAIL;
     }
@@ -1221,10 +1276,14 @@ sync_result_t process_sync_response(const char *json, size_t len) {
         claimed_store();
     }
 
-    /* Where the owner goes to add photos. */
+    /* Where the owner goes to add photos.
+     *
+     * The server sends a path, and the frame knows the address of the
+     * server, so the two are put together here. A path on its own is not
+     * something anybody can open. */
     cJSON *dashboard = cJSON_GetObjectItem(root, "dashboard_url");
     if (cJSON_IsString(dashboard) && dashboard->valuestring != NULL) {
-        snprintf(s_dashboard_url, sizeof(s_dashboard_url), "%s", dashboard->valuestring);
+        url_from_server(s_dashboard_url, sizeof(s_dashboard_url), dashboard->valuestring);
     }
 
     /* Remember when to check in next. */

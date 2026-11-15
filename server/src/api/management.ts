@@ -1081,6 +1081,11 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
     const userId = await requireUser(request, reply);
     if (userId === null) return;
 
+    /* Only the frames that belong to this owner are shown.
+     *
+     * A frame that has just enrolled belongs to nobody, and it is not
+     * shown to everybody either: the owner finds it with its code, which
+     * is printed on the frame itself. */
     const devices = db
       .prepare(
         `SELECT id, name, device_id, state, panel_width, panel_height, timezone,
@@ -1126,6 +1131,52 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
         };
       }),
     );
+  });
+
+  /**
+   * Claim a frame with the code it shows.
+   *
+   * The code is printed on the frame, so it is the owner's proof that the
+   * frame is theirs. A frame that has just enrolled belongs to nobody
+   * until somebody says so here.
+   */
+  app.post(`${basePath}/devices/claim`, async (request, reply) => {
+    const userId = await requireUser(request, reply);
+    if (userId === null) return;
+
+    const body = request.body as { code?: string };
+    const code = body?.code?.trim().toUpperCase();
+    if (!code) {
+      await reply.code(400).send({ error: "the code is required" });
+      return;
+    }
+
+    const device = db
+      .prepare("SELECT id, state, claim_expires_at FROM devices WHERE claim_code = ?")
+      .get(code) as
+      | { id: number; state: string; claim_expires_at: string }
+      | undefined;
+
+    if (!device) {
+      await reply.code(404).send({ error: "unknown code" });
+      return;
+    }
+    if (device.state !== "pending") {
+      await reply.code(409).send({ error: "the code has already been used" });
+      return;
+    }
+    if (new Date(device.claim_expires_at).getTime() < Date.now()) {
+      await reply.code(410).send({ error: "the code has expired" });
+      return;
+    }
+
+    db.prepare(
+      `UPDATE devices
+       SET user_id = ?, state = 'claimed', claim_code = NULL, claim_expires_at = NULL
+       WHERE id = ?`,
+    ).run(userId, device.id);
+
+    await reply.send({ status: "claimed", device_id: device.id });
   });
 
   app.post(`${basePath}/devices/:id/galleries`, async (request, reply) => {

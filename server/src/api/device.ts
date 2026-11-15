@@ -13,6 +13,7 @@ import { MAX_CLOCK_SKEW_MS } from "../auth/signing.js";
 import type { Db } from "../db/index.js";
 import type { ScheduleService } from "../schedule/service.js";
 import { verifyDeviceRequest } from "./device-auth.js";
+import { publicPath } from "./public-path.js";
 
 /**
  * How long after an event's time its photo is still offered to the frame.
@@ -309,9 +310,17 @@ export function registerDeviceApi(app: FastifyInstance, options: DeviceApiOption
     const now = Date.now();
     const window = schedules.getForDevice(auth.id, now);
 
-    /* Where the owner manages the frame. The dashboard lives at the root
-     * of the server, so this is the address of the server itself. */
-    const dashboardUrl = `${basePath.replace(/\/api\/device$/, "")}/`;
+    /* Where the owner manages the frame.
+     *
+     * The dashboard lives at the root of wherever the server is, so the
+     * path is worked out from the request that came in. A server that is
+     * behind a path prefix, such as Home Assistant's ingress endpoint,
+     * receives the request with the prefix already taken off, so the
+     * prefix cannot be worked out from the path alone.
+     *
+     * The proxy says what the prefix was in a header, and that is what is
+     * used when it is there. */
+    const dashboardUrl = `${publicPath(request, basePath)}/`;
     const policy = schedules.policyFor(auth.id);
 
     /* The whole plan is sent to the frame, not just the part of it that

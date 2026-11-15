@@ -379,7 +379,7 @@ static int64_t run_cycle(wake_reason_t reason) {
              * been claimed. It asks every few seconds. */
             if (sync_needs_enrol()) {
                 char claim_code[32] = {0};
-                char claim_url[160] = {0};
+                char claim_url[512] = {0};
                 bool claimed = false;
 
                 if (sync_enrol(claim_code, sizeof(claim_code), claim_url, sizeof(claim_url),
@@ -504,6 +504,13 @@ static int64_t run_cycle(wake_reason_t reason) {
         const char *shown = schedule_displayed_asset();
         if (shown != NULL && shown[0] != '\0') {
             ESP_LOGI(TAG, "There is nothing to show, so the last picture stays");
+        } else if (sync_needs_enrol()) {
+            /* A frame that has not been claimed yet is not in this state.
+             * It has nothing scheduled because it cannot sync until it is
+             * claimed, and the screen it needs is the one with the claim
+             * code on it. Showing the other one would tell the owner the
+             * frame is ready when it is still waiting for them. */
+            ESP_LOGI(TAG, "Not claimed yet; the claim screen stays");
         } else if (!display_task_ready_shown()) {
             ESP_LOGI(TAG, "There are no photos yet; showing the ready screen");
             display_task_show_ready_screen(

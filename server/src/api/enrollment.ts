@@ -25,6 +25,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import type { Db } from "../db/index.js";
 import { DEFAULT_RULES } from "../schedule/defaults.js";
+import { publicPath } from "./public-path.js";
 
 export interface EnrollmentOptions {
   readonly db: Db;
@@ -221,7 +222,11 @@ export function registerEnrollmentApi(app: FastifyInstance, options: EnrollmentO
       // showing the code until the server says otherwise.
       claimed: false,
       // The device encodes this as a QR code pointing at the claim URL.
-      claim_url: `/claim/${claimCode}`,
+      //
+      // The path is where the server is reached from the outside, so that
+      // the code works when the server is behind a path prefix. The
+      // device joins it with the address it was given.
+      claim_url: `${publicPath(request, basePath)}/claim/${claimCode}`,
       // The device's clock is not yet anchored to real time when it first
       // enrols, so it cannot produce a timestamp the server would accept.
       // The server's time here is what anchors it. Later requests carry a
