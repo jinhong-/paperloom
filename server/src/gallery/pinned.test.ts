@@ -223,6 +223,41 @@ test("a picture asked for is put after what the frame has already shown", async 
   );
 });
 
+test("a picture whose moment has passed is put at the next wake", async () => {
+  const world = await makeWorld();
+
+  world.db
+    .prepare(
+      `INSERT INTO device_sync_rules (device_id, days, start_minute, end_minute, sync_interval, priority)
+       VALUES (?, 127, 0, 1440, 900, 0)`,
+    )
+    .run(world.deviceId);
+
+  const added = await world.photos.addPhoto(
+    world.galleryId,
+    "late.png",
+    await image(220, 30, 30),
+  );
+
+  /* The picture was asked for while the frame was asleep, and its moment
+   * came and went without it being shown. */
+  const moment = Date.now() - 60_000;
+  world.db
+    .prepare(
+      "INSERT INTO pinned_photos (device_id, photo_id, at) VALUES (?, ?, ?)",
+    )
+    .run(world.deviceId, added.id, moment);
+
+  const plan = world.schedules.getForDevice(world.deviceId, Date.now());
+
+  const pinned = plan.items.find((item) => item.asset === added.contentHash);
+  assert.ok(pinned, "the picture must still be in the plan");
+  assert.ok(
+    pinned!.at > moment,
+    "the picture must be put at a moment that has not passed",
+  );
+});
+
 test("a picture from Telegram is pinned to the frame's next check-in", async () => {
   const world = await makeWorld();
 

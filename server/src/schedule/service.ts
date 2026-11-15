@@ -858,20 +858,43 @@ export class ScheduleService {
 
     const rows = this.db
       .prepare(
-        `SELECT pp.at, COALESCE(pa.content_hash, p.content_hash) AS content_hash
+        `SELECT pp.id, pp.at, COALESCE(pa.content_hash, p.content_hash) AS content_hash
          FROM pinned_photos pp
          JOIN photos p ON p.id = pp.photo_id
          LEFT JOIN photo_assets pa ON pa.photo_id = pp.photo_id AND pa.rotation = ?
          WHERE pp.device_id = ? AND pp.shown = 0
          ORDER BY pp.at`,
       )
-      .all(rotation, deviceId) as Array<{ at: number; content_hash: string | null }>;
+      .all(rotation, deviceId) as Array<{
+      id: number;
+      at: number;
+      content_hash: string | null;
+    }>;
 
     const pins: Array<{ at: number; contentHash: string }> = [];
     for (const row of rows) {
-      if (row.content_hash) {
-        pins.push({ at: row.at, contentHash: row.content_hash });
+      if (!row.content_hash) continue;
+
+      /* A picture whose moment has passed is put at the next moment the
+       * frame wakes.
+       *
+       * The frame was asleep when the picture was asked for, and its
+       * moment came and went without it being shown. Left where it is, the
+       * picture would never be shown at all: the frame will not show a
+       * picture it has already shown, and it will not show one whose
+       * moment has gone either.
+       *
+       * Moving it to the next wake is what the owner meant: show this
+       * one next. */
+      let at = row.at;
+      if (at <= Date.now()) {
+        at = this.nextWake(deviceId, Date.now());
+        this.db
+          .prepare("UPDATE pinned_photos SET at = ? WHERE id = ?")
+          .run(at, row.id);
       }
+
+      pins.push({ at, contentHash: row.content_hash });
     }
     return pins;
   }
