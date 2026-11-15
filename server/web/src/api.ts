@@ -572,6 +572,18 @@ export const api = {
       method: "POST",
     }),
 
+  /**
+   * Claim a frame with the code it shows.
+   *
+   * The code is printed on the frame, so it is the owner's proof that the
+   * frame is theirs.
+   */
+  claimDevice: (code: string) =>
+    request<{ status: string; device_id: number }>(`/api/devices/claim`, {
+      method: "POST",
+      body: JSON.stringify({ code }),
+    }),
+
   /* Telegram */
 
   telegramBots: () => request<{ bots: TelegramBot[] }>("/api/telegram/bots"),

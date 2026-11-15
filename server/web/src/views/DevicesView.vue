@@ -31,6 +31,9 @@ const projected = ref<ScheduleItem[]>([]);
 const error = ref<string | null>(null);
 const notice = ref<string | null>(null);
 
+/* The code a frame shows while it waits to be claimed. */
+const claimCode = ref("");
+
 /* What the frame is doing, and whether it is working on it.
  *
  * A frame only checks in every so often, so a change does not show up on
@@ -147,6 +150,29 @@ async function chooseGallery(galleryId: number | null): Promise<void> {
     }
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
+    busy.value = null;
+  }
+}
+
+/**
+ * Claim a frame with the code it shows.
+ *
+ * The code is the owner's proof that the frame is theirs, so it is what
+ * the frame is found by.
+ */
+async function claimWithCode(): Promise<void> {
+  if (claimCode.value.trim() === "") return;
+  error.value = null;
+  notice.value = null;
+  busy.value = "Claiming the frame...";
+  try {
+    await api.claimDevice(claimCode.value);
+    claimCode.value = "";
+    notice.value = "The frame is yours now. It will pick up its pictures at its next check-in.";
+    await session.reload();
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
     busy.value = null;
   }
 }
@@ -321,8 +347,33 @@ onMounted(async () => {
       <h2>Frames</h2>
 
       <div v-if="session.loading" class="empty">Loading...</div>
-      <div v-else-if="session.devices.length === 0" class="empty">
-        No frames yet. Set one up and enter the claim code it shows.
+
+      <div v-else class="card">
+        <h3>Claim a frame</h3>
+        <p class="small muted">
+          A frame that has just set itself up has a code on it. Type the
+          code here and the frame is yours.
+        </p>
+        <div class="row">
+          <div class="field grow">
+            <label for="claim-code">The code on the frame</label>
+            <input
+              id="claim-code"
+              v-model="claimCode"
+              placeholder="S7TQ-K25V-PJRR"
+              @keyup.enter="claimWithCode"
+            />
+          </div>
+          <div class="field" style="align-self: flex-end">
+            <button :disabled="busy !== null || claimCode.trim() === ''" @click="claimWithCode">
+              Claim it
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="session.devices.length === 0" class="empty">
+        No frames yet. Set one up and type the code it shows above.
       </div>
 
       <div v-for="device in session.devices" :key="device.id" class="card">
