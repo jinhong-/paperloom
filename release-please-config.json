@@ -35,15 +35,14 @@
       ]
     },
     "hassio": {
-      "release-type": "simple",
+      "release-type": "generic",
       "package-name": "paperloom-hassio",
       "changelog-path": "CHANGELOG.md",
       "skip-github-release": true,
-      "version-file": "config.yaml",
       "extra-files": [
         {
           "type": "yaml",
-          "path": "hassio/config.yaml",
+          "path": "config.yaml",
           "jsonpath": "$.version"
         }
       ]
