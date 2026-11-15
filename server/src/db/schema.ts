@@ -769,4 +769,26 @@ DROP TABLE IF EXISTS gallery_manual_pictures;
 ALTER TABLE devices ADD COLUMN displayed_at INTEGER;
 `,
   },
+  {
+    id: "0021_replaced_asset",
+    sql: `
+-- The pictures a frame is no longer going to be shown.
+--
+-- A picture can be replaced: in the latest mode a picture from a chat
+-- replaces the one that was waiting, and a picture asked for through the
+-- management UI replaces that as well. The replaced picture is not going
+-- to be shown, so it must not be in the frame's plan.
+--
+-- The plan is extended rather than handed over, so that the times already
+-- in it do not move. That means the events for the replaced picture would
+-- still be in it, and the rotation would put it back. The server cannot
+-- work out from the plan alone which pictures have been replaced, so it
+-- is kept here, per frame.
+--
+-- There is more than one of them: a picture sent yesterday may still be
+-- in the plan when the picture sent today replaces another one, and it
+-- must stay out of the plan until the frame has moved past it.
+ALTER TABLE devices ADD COLUMN replaced_assets TEXT;
+`,
+  },
 ];

@@ -175,14 +175,35 @@ export class ScheduleService {
    * The plan is extended rather than handed over, so that the times
    * already in it do not move. The picture is put in at its own moment,
    * and the plan reaches far enough to cover it.
+   *
+   * @param replaced the picture the new one replaces, if there was one.
+   *        The plan's event for it is taken out: a picture that has been
+   *        replaced is not going to be shown, and leaving it in the plan
+   *        would have the frame show it anyway.
    */
-  addPinnedEvent(deviceId: number, at: number, photoId: number): void {
+  addPinnedEvent(
+    deviceId: number,
+    at: number,
+    photoId: number,
+    replaced?: string,
+  ): void {
     const device = this.db
       .prepare("SELECT id, displayed_asset, timezone FROM devices WHERE id = ?")
       .get(deviceId) as
       | { id: number; displayed_asset: string | null; timezone: string }
       | undefined;
     if (!device) return;
+
+    /* The picture that was replaced is kept on the frame, so that the
+     * plan leaves it out however many times the plan is worked out
+     * again. */
+    if (replaced !== undefined) {
+      const kept = new Set(this.replacedAssets(deviceId));
+      kept.add(replaced);
+      this.db
+        .prepare("UPDATE devices SET replaced_assets = ? WHERE id = ?")
+        .run(JSON.stringify([...kept]), deviceId);
+    }
 
     const policy = this.policyFor(deviceId);
     const span = this.coverageSpan(deviceId, policy);
@@ -207,6 +228,7 @@ export class ScheduleService {
       device,
       true,
       windowEnd,
+      replaced,
     );
   }
 
@@ -420,9 +442,18 @@ export class ScheduleService {
     device: { displayed_asset: string | null; timezone: string },
     keep = true,
     windowEndOverride?: number,
+    replaced?: string,
   ): ScheduleWindow {
     const galleries = this.galleriesFor(deviceId);
     const candidates = this.candidatesFor(deviceId);
+
+    /* The pictures that were replaced are kept on the frame, and are left
+     * out of the plan however many times the plan is worked out again.
+     *
+     * The plan is extended rather than handed over, so the events for them
+     * would still be in the plan, and the rotation would put them back. */
+    const gone = new Set(this.replacedAssets(deviceId));
+    if (replaced !== undefined) gone.add(replaced);
 
     const lastPhotoId = device.displayed_asset
       ? this.photoIdForAsset(device.displayed_asset)
@@ -480,6 +511,7 @@ export class ScheduleService {
       currentAsset: device.displayed_asset ?? undefined,
       lastPhotoId,
       pinned,
+      replaced: gone,
     });
 
     /* The events that have long since passed are dropped.
@@ -493,7 +525,30 @@ export class ScheduleService {
      * A little of the recent past is kept, so that the frame has the
      * event it is about to show even if its clock is a little behind. */
     const keepFrom = now - PLAN_PAST_MS;
-    const live = items.filter((item) => item.at > keepFrom);
+    let live = items.filter((item) => item.at > keepFrom);
+
+    /* A picture that has been replaced is not going to be shown.
+     *
+     * In the latest mode a picture replaces the one that was waiting. The
+     * plan is extended rather than handed over, so the events for the
+     * picture that was waiting would still be in it, and the frame would
+     * be shown that picture and then the new one: the opposite of what
+     * was asked for.
+     *
+     * The events are taken out whether their moments have passed or not.
+     * The frame may well have slept through them, and it is the frame's
+     * own record of what it has shown that says whether they happened: an
+     * event the frame has shown is kept, because it has happened. */
+    if (gone.size > 0) {
+      const shownAt = this.displayedAt(deviceId);
+      live = live.filter(
+        (item) =>
+          !(
+            gone.has(item.asset) &&
+            (shownAt === null || item.at > shownAt)
+          ),
+      );
+    }
 
     const revision = this.computeRevision(deviceId, windowStart, live);
 
@@ -680,6 +735,36 @@ export class ScheduleService {
       .prepare("SELECT displayed_at FROM devices WHERE id = ?")
       .get(deviceId) as { displayed_at: number | null } | undefined;
     return row?.displayed_at ?? null;
+  }
+
+  /**
+   * The pictures a frame is no longer going to be shown.
+   *
+   * A picture that was replaced is left out of the plan. The plan is
+   * extended rather than handed over, so the events for it would still be
+   * in the plan and the rotation would put it back: the frame would be
+   * shown the picture that was replaced after all.
+   *
+   * There is more than one of them: a picture sent yesterday may still be
+   * in the plan when the picture sent today replaces another one.
+   */
+  private replacedAssets(deviceId: number): string[] {
+    const row = this.db
+      .prepare("SELECT replaced_assets FROM devices WHERE id = ?")
+      .get(deviceId) as { replaced_assets: string | null } | undefined;
+
+    if (row?.replaced_assets === null || row?.replaced_assets === undefined) {
+      return [];
+    }
+
+    try {
+      const parsed = JSON.parse(row.replaced_assets);
+      return Array.isArray(parsed)
+        ? parsed.filter((asset): asset is string => typeof asset === "string")
+        : [];
+    } catch {
+      return [];
+    }
   }
 
   /**

@@ -449,6 +449,133 @@ test("every picture in the queue is in the plan", () => {
   assert.equal(seconds[0]!.at, second, "the second picture must be shown when it was pinned for");
 });
 
+test("in the latest mode the plan holds only the picture that is waiting", async () => {
+  const world = await makeWorld();
+
+  /* A gallery that changes once a day. */
+  world.db
+    .prepare(
+      `UPDATE gallery_schedule_rules
+       SET min_interval = 86400, max_interval = 86400
+       WHERE gallery_id = ?`,
+    )
+    .run(world.galleryId);
+  world.db
+    .prepare("UPDATE galleries SET telegram_mode = 'latest' WHERE id = ?")
+    .run(world.galleryId);
+
+  /* Two pictures are sent. Only the second one is of any interest. */
+  await world.photos.addPhoto(world.galleryId, "one.png", await image(220, 30, 30), {
+    pin: true,
+  });
+  const second = await world.photos.addPhoto(world.galleryId, "two.png", await image(30, 30, 220), {
+    pin: true,
+  });
+
+  const waiting = world.pins.pendingFor(world.deviceId);
+  assert.equal(waiting.length, 1, "only one picture must be waiting");
+
+  /* The plan the frame is following must hold that one picture, and only
+   * that one. The picture that was replaced must not be in it. */
+  const plan = world.schedules.getForDevice(world.deviceId, Date.now());
+
+  const shown = plan.items.filter((item) => item.asset === second.contentHash);
+  assert.ok(shown.length > 0, "the waiting picture must be in the plan");
+
+  const replaced = world.db
+    .prepare("SELECT content_hash FROM photos WHERE filename = 'one.png'")
+    .get() as { content_hash: string };
+  const stale = plan.items.filter((item) => item.asset === replaced.content_hash);
+  assert.equal(stale.length, 0, "the picture that was replaced must not be in the plan");
+});
+
+test("in the latest mode every replaced picture is left out of the plan", async () => {
+  const world = await makeWorld();
+
+  world.db
+    .prepare(
+      `UPDATE gallery_schedule_rules
+       SET min_interval = 86400, max_interval = 86400
+       WHERE gallery_id = ?`,
+    )
+    .run(world.galleryId);
+  world.db
+    .prepare("UPDATE galleries SET telegram_mode = 'latest' WHERE id = ?")
+    .run(world.galleryId);
+
+  /* Three pictures are sent, one after another. Only the last one is of
+   * any interest, and the other two are not to be shown at all. */
+  const first = await world.photos.addPhoto(world.galleryId, "one.png", await image(220, 30, 30), {
+    pin: true,
+  });
+  const second = await world.photos.addPhoto(world.galleryId, "two.png", await image(30, 30, 220), {
+    pin: true,
+  });
+  const third = await world.photos.addPhoto(world.galleryId, "three.png", await image(30, 220, 30), {
+    pin: true,
+  });
+
+  const plan = world.schedules.getForDevice(world.deviceId, Date.now());
+
+  assert.equal(
+    plan.items.filter((item) => item.asset === first.contentHash).length,
+    0,
+    "the first picture must not be in the plan",
+  );
+  assert.equal(
+    plan.items.filter((item) => item.asset === second.contentHash).length,
+    0,
+    "the second picture must not be in the plan",
+  );
+
+  const wanted = plan.items.filter((item) => item.asset === third.contentHash);
+  assert.ok(wanted.length > 0, "the picture that is waiting must be in the plan");
+
+  const distinct = new Set(plan.items.map((item) => item.asset));
+  assert.equal(distinct.size, 1, "the plan must hold only the picture that is waiting");
+});
+
+test("a picture asked for takes the place of the one that was waiting", async () => {
+  const world = await makeWorld();
+
+  world.db
+    .prepare(
+      `INSERT INTO device_sync_rules (device_id, days, start_minute, end_minute, sync_interval, priority)
+       VALUES (?, 127, 0, 1440, 900, 0)`,
+    )
+    .run(world.deviceId);
+
+  /* A picture from a chat is waiting to be shown. */
+  const first = await world.photos.addPhoto(
+    world.galleryId,
+    "from-chat.png",
+    await image(220, 30, 30),
+    { pin: true },
+  );
+
+  /* The owner asks for a different one to be shown next. */
+  const second = await world.photos.addPhoto(
+    world.galleryId,
+    "asked-for.png",
+    await image(30, 30, 220),
+  );
+  const made = world.pins.pinForOwner(world.deviceId, second.id, Date.now());
+  world.schedules.addPinnedEvent(
+    made.device_id,
+    made.at,
+    made.photo_id,
+    made.replaced,
+  );
+
+  const plan = world.schedules.getForDevice(world.deviceId, Date.now());
+
+  const stale = plan.items.filter((item) => item.asset === first.contentHash);
+  assert.equal(stale.length, 0, "the picture it replaced must not be in the plan");
+
+  const wanted = plan.items.filter((item) => item.asset === second.contentHash);
+  assert.ok(wanted.length > 0, "the picture that was asked for must be in the plan");
+});
+
 test("every frame showing the gallery gets the picture pinned", async () => {
   const world = await makeWorld();
 

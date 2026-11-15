@@ -283,6 +283,15 @@ export interface MaterializeInput {
    * one before it.
    */
   readonly pinned?: ReadonlyArray<{ readonly at: number; readonly contentHash: string }>;
+  /**
+   * The picture that has been replaced, if there was one.
+   *
+   * A picture that has been replaced is not going to be shown, so it is
+   * left out of the rotation as well as out of the plan's own events.
+   * Otherwise the rotation would put it back into the plan, and the frame
+   * would be shown the picture that was replaced after all.
+   */
+  readonly replaced?: ReadonlySet<string>;
 }
 
 /**
@@ -334,6 +343,19 @@ export function materializeSchedule(input: MaterializeInput): DisplayEvent[] {
    * so the lookup is by the rounded time. */
   const existing = input.existing ?? [];
   const existingByAt = new Map(existing.map((e) => [floorToMinute(e.at), e]));
+
+  /* A picture that has been replaced is not going to be shown.
+   *
+   * The plan is extended rather than handed over, so the events for it
+   * would still be in it, and the rotation would put it back. It is left
+   * out of both: a picture that has been replaced is not going to be
+   * shown, and the frame must not be told to show it anyway.
+   *
+   * The frame's own record of what it has shown says whether it happened
+   * anyway, but the server cannot know that for the events that are still
+   * to come, and those are the ones that matter. */
+  const replaced = input.replaced ?? new Set<string>();
+  const isGone = (asset: string): boolean => replaced.has(asset);
 
   /* A picture pinned to a moment is shown at that moment.
    *
@@ -415,13 +437,24 @@ export function materializeSchedule(input: MaterializeInput): DisplayEvent[] {
     const pool = candidates.filter((c) => c.belongsTo === gallery.galleryId);
     const usable = pool.length > 0 ? pool : candidates;
 
+    /* A picture that has been replaced is left out of the rotation, so
+     * that it is not put back into the plan. */
+    const eligible = usable.filter((c) => !isGone(c.contentHash));
+
     let picked: Candidate | undefined;
     if (already) {
-      picked = candidates.find((c) => c.contentHash === already.asset);
+      /* An event the plan already has keeps its photo, unless that photo
+       * has been replaced. The plan is extended rather than handed over,
+       * so the event for it would still be there, and the frame would be
+       * shown the picture that was replaced after all. */
+      picked =
+        isGone(already.asset)
+          ? undefined
+          : candidates.find((c) => c.contentHash === already.asset);
     } else if (rule.rotationMode === "sequential") {
-      picked = pickSequential(usable, lastPhotoId, currentAsset);
+      picked = pickSequential(eligible, lastPhotoId, currentAsset);
     } else {
-      picked = pickWeighted(usable, rng, lastPhotoId);
+      picked = pickWeighted(eligible, rng, lastPhotoId);
     }
     // No eligible photo (e.g. every photo in the gallery has weight 0).
     // Skip this slot rather than showing something ineligible.

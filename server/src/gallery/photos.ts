@@ -303,9 +303,18 @@ export class GalleryPhotoService {
        * there is no later check-in to wait for.
        *
        * The plan is extended rather than handed over, so that the times
-       * already in it do not move. */
+       * already in it do not move.
+       *
+       * A picture that replaced another one has that one's event taken
+       * out of the plan: a picture that has been replaced is not going to
+       * be shown, and the frame must not be told to show it anyway. */
       for (const pin of pins) {
-        this.options.schedules.addPinnedEvent(pin.device_id, pin.at, pin.photo_id);
+        this.options.schedules.addPinnedEvent(
+          pin.device_id,
+          pin.at,
+          pin.photo_id,
+          pin.replaced,
+        );
       }
     }
 

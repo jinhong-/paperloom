@@ -873,7 +873,7 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
     }
 
     const made = pins.pinForOwner(deviceIdOf(Number(id)), photo.id, Date.now());
-    schedules.addPinnedEvent(made.device_id, made.at, made.photo_id);
+    schedules.addPinnedEvent(made.device_id, made.at, made.photo_id, made.replaced);
 
     await reply.send({ status: "ok", shown_at: made.at });
   });

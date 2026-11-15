@@ -27,6 +27,15 @@ export interface PinnedPhoto {
   readonly photo_id: number;
   readonly at: number;
   readonly shown: boolean;
+  /**
+   * The picture this one replaces, if there was one.
+   *
+   * It is the asset the frame would have been shown, so that the plan's
+   * event for it can be taken out. A picture that has been replaced is
+   * not going to be shown, and the frame must not be told to show it
+   * anyway.
+   */
+  readonly replaced?: string;
 }
 
 export interface PinOptions {
@@ -90,11 +99,17 @@ export class PinnedPhotoService {
     /* The picture that is waiting is replaced. */
     const waiting = db
       .prepare(
-        `SELECT id, at FROM pinned_photos
+        `SELECT id, at, photo_id FROM pinned_photos
          WHERE device_id = ? AND shown = 0
          ORDER BY at ASC LIMIT 1`,
       )
-      .get(deviceId) as { id: number; at: number } | undefined;
+      .get(deviceId) as { id: number; at: number; photo_id: number } | undefined;
+
+    /* The picture that was waiting is noted, so that the plan can take
+     * its event out. A picture that has been replaced is not going to be
+     * shown, and the frame must not be told to show it anyway. */
+    const replaced =
+      waiting !== undefined ? this.assetOf(waiting.photo_id, deviceId) : undefined;
 
     if (waiting !== undefined) {
       db.prepare("DELETE FROM pinned_photos WHERE device_id = ? AND shown = 0").run(deviceId);
@@ -112,6 +127,7 @@ export class PinnedPhotoService {
       photo_id: photoId,
       at,
       shown: false,
+      ...(replaced !== undefined ? { replaced } : {}),
     };
   }
 
@@ -142,6 +158,7 @@ export class PinnedPhotoService {
 
     for (const frame of this.framesFor(galleryId)) {
       let at: number;
+      let replaced: string | undefined;
 
       if (mode === "latest") {
         /* The picture that is waiting is replaced, and the new one takes
@@ -150,13 +167,19 @@ export class PinnedPhotoService {
          * soon as the frame is next in touch. */
         const waiting = db
           .prepare(
-            `SELECT at FROM pinned_photos
+            `SELECT at, photo_id FROM pinned_photos
              WHERE device_id = ? AND shown = 0
              ORDER BY at ASC LIMIT 1`,
           )
-          .get(frame.id) as { at: number } | undefined;
+          .get(frame.id) as { at: number; photo_id: number } | undefined;
 
         if (waiting !== undefined) {
+          /* The picture that was waiting is noted, so that the plan can
+           * take its event out. A picture that has been replaced is not
+           * going to be shown, and the frame must not be told to show
+           * it anyway. */
+          replaced = this.assetOf(waiting.photo_id, frame.id);
+
           db.prepare("DELETE FROM pinned_photos WHERE device_id = ? AND shown = 0").run(frame.id);
           at = waiting.at;
         } else {
@@ -190,10 +213,44 @@ export class PinnedPhotoService {
         photo_id: photoId,
         at,
         shown: false,
+        ...(replaced !== undefined ? { replaced } : {}),
       });
     }
 
     return pins;
+  }
+
+  /**
+   * The asset a picture is shown as on a frame.
+   *
+   * A frame that is turned is shown a different rendering of the picture,
+   * so the asset is looked up for the frame's own rotation, as it is for
+   * every other picture.
+   */
+  private assetOf(photoId: number, deviceId: number): string | undefined {
+    const rotation = this.rotationOf(deviceId);
+
+    const row = this.options.db
+      .prepare(
+        `SELECT COALESCE(pa.content_hash, p.content_hash) AS content_hash
+         FROM photos p
+         LEFT JOIN photo_assets pa ON pa.photo_id = p.id AND pa.rotation = ?
+         WHERE p.id = ?`,
+      )
+      .get(rotation, photoId) as { content_hash: string | null } | undefined;
+
+    return row?.content_hash ?? undefined;
+  }
+
+  /**
+   * How a frame is turned, which decides which rendering it is shown.
+   */
+  private rotationOf(deviceId: number): number {
+    const row = this.options.db
+      .prepare("SELECT rotation FROM devices WHERE id = ?")
+      .get(deviceId) as { rotation: number | null } | undefined;
+
+    return row?.rotation ?? 0;
   }
 
   /**
