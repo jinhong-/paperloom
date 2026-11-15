@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.2](https://github.com/jinhong-/paperloom/compare/paperloom-hassio-v0.5.1...paperloom-hassio-v0.5.2) (2026-11-15)
+
+
+### Chores
+
+* **paperloom-hassio:** Synchronize paperloom versions
+
 ## [0.5.1](https://github.com/jinhong-/paperloom/compare/paperloom-hassio-v0.5.0...paperloom-hassio-v0.5.1) (2026-11-15)
 
 

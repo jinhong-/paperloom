@@ -1,6 +1,6 @@
 {
-  "server": "0.2.0",
+  "server": "0.2.1",
   "firmware": "0.2.0",
-  "server/web": "0.5.1",
-  "hassio": "0.5.1"
+  "server/web": "0.5.2",
+  "hassio": "0.5.2"
 }

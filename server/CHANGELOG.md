@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/jinhong-/paperloom/compare/paperloom-server-v0.2.0...paperloom-server-v0.2.1) (2026-11-15)
+
+
+### Bug Fixes
+
+* a picture whose moment has passed is still shown ([57a4b6a](https://github.com/jinhong-/paperloom/commit/57a4b6a0a676894f768db0ebb98701647e64de2d))
+
 ## [0.2.0](https://github.com/jinhong-/paperloom/compare/paperloom-server-v0.1.0...paperloom-server-v0.2.0) (2026-11-15)
 
 
