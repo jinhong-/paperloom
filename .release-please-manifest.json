@@ -1,4 +1,4 @@
 {
-  "server/web": "0.4.1",
-  "hassio": "0.4.1"
+  "server/web": "0.4.0",
+  "hassio": "0.4.0"
 }
