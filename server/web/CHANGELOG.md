@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/jinhong-/paperloom/compare/paperloom-web-v0.5.0...paperloom-web-v0.5.1) (2026-11-15)
+
+
+### Bug Fixes
+
+* **web:** the gallery's previews, and the blank page on the way in ([8d7962a](https://github.com/jinhong-/paperloom/commit/8d7962a57182f3d8ffadb92f9fa44a38e3fbf733))
+
 ## [0.5.0](https://github.com/jinhong-/paperloom/compare/paperloom-web-v0.4.1...paperloom-web-v0.5.0) (2026-11-15)
 
 
