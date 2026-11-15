@@ -15,11 +15,6 @@
     { "type": "chore", "section": "Chores" }
   ],
   "packages": {
-    ".": {
-      "release-type": "simple",
-      "package-name": "paperloom",
-      "changelog-path": "CHANGELOG.md"
-    },
     "server/web": {
       "release-type": "node",
       "package-name": "paperloom-web",
@@ -28,6 +23,11 @@
         {
           "type": "json",
           "path": "server/web/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "yaml",
+          "path": "hassio/config.yaml",
           "jsonpath": "$.version"
         }
       ]
