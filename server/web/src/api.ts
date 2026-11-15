@@ -242,10 +242,52 @@ export class ApiError extends Error {
 }
 
 /**
+ * The address the API is at, relative to the page.
+ *
+ * The built UI refers to its assets relatively, so that it works behind
+ * Home Assistant's path-prefixed ingress endpoint. The API has to be
+ * reached the same way: an absolute path would leave the prefix and go
+ * to Home Assistant itself, which answers with something that is not the
+ * server's answer at all.
+ *
+ * The prefix is taken from the address the app's own script was loaded
+ * from, which is exactly where the app is being served: the script sits
+ * at <prefix>/assets/app.js, so the prefix is what comes before
+ * /assets/.
+ */
+let cachedApiBase: string | null = null;
+
+function apiBase(): string {
+  if (cachedApiBase !== null) return cachedApiBase;
+
+  const scripts = Array.from(
+    document.querySelectorAll<HTMLScriptElement>("script[src]"),
+  );
+  const script = scripts.find((element) =>
+    element.src.includes("/assets/"),
+  );
+
+  if (!script) {
+    /* No script to learn the prefix from. The server is then at the root
+     * of wherever the page is, which is the case when it is not behind a
+     * path prefix. */
+    cachedApiBase = "/";
+    return cachedApiBase;
+  }
+
+  /* The script is at <prefix>/assets/app.js. The API is at <prefix>/api.
+   * The prefix keeps its trailing slash, so that the address is put
+   * together without a missing slash in the middle. */
+  const index = script.src.indexOf("/assets/");
+  cachedApiBase = index >= 0 ? script.src.slice(0, index + 1) : "/";
+  return cachedApiBase;
+}
+
+/**
  * Perform an API request.
  */
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(path, {
+  const response = await fetch(`${apiBase()}${path.replace(/^\//, "")}`, {
     ...init,
     credentials: "same-origin",
     headers: {
@@ -424,8 +466,11 @@ export const api = {
 
   /**
    * The URL of a photo's original upload, for the gallery preview.
+   *
+   * It is built from the same base as the API calls, so that it is found
+   * behind Home Assistant's path prefix as well as at the server's root.
    */
-  photoPreviewUrl: (id: number) => `/api/photos/${id}/preview`,
+  photoPreviewUrl: (id: number) => `${apiBase()}/api/photos/${id}/preview`,
 
   /* Devices */
   devices: () => request<Device[]>("/api/devices"),
