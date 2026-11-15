@@ -24,7 +24,12 @@ const publicRoutes = new Set(["login", "invitation", "claim", "setup"]);
 export const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
-    { path: "/", redirect: "/galleries" },
+    /* The root shows the galleries.
+     *
+     * It is the same page under another name rather than a redirect,
+     * because a redirect is a second journey: the page would be blank
+     * while the first one finished and the second one began. */
+    { path: "/", name: "home", component: GalleriesView },
     { path: "/login", name: "login", component: LoginView },
     { path: "/setup", name: "setup", component: SetupView },
     { path: "/invitation/:code", name: "invitation", component: InvitationView },
@@ -64,9 +69,14 @@ router.beforeEach(async (to) => {
   const session = useSessionStore();
 
   /* The session is asked about once, on the first page that is opened,
-   * and the answer is kept. */
+   * and the answer is kept.
+   *
+   * The two questions are asked together rather than one after the other.
+   * Asking them in turn means the page waits for two journeys to and fro
+   * before it knows where to send the owner, and it is blank for the
+   * whole of it. */
   if (!session.checked) {
-    await session.refresh();
+    await Promise.all([session.refresh(), setupState(session)]);
   }
 
   if (session.signedIn()) {
@@ -80,7 +90,6 @@ router.beforeEach(async (to) => {
 
   /* A server with no owner cannot be signed in to, so the setup page is
    * the way in. */
-  await setupState(session);
   if (session.setupOpen === true) {
     return { name: "setup", query: { next: to.fullPath } };
   }

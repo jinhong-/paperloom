@@ -284,10 +284,23 @@ function apiBase(): string {
 }
 
 /**
+ * The address of something on the server.
+ *
+ * The base keeps its trailing slash and the path loses its leading one,
+ * so that the two are put together with exactly one slash between them.
+ *
+ * Doing this in one place matters: an address with two slashes in it is
+ * not the same address, and the server does not answer it.
+ */
+function apiUrl(path: string): string {
+  return `${apiBase()}${path.replace(/^\//, "")}`;
+}
+
+/**
  * Perform an API request.
  */
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${apiBase()}${path.replace(/^\//, "")}`, {
+  const response = await fetch(apiUrl(path), {
     ...init,
     credentials: "same-origin",
     headers: {
@@ -470,7 +483,7 @@ export const api = {
    * It is built from the same base as the API calls, so that it is found
    * behind Home Assistant's path prefix as well as at the server's root.
    */
-  photoPreviewUrl: (id: number) => `${apiBase()}/api/photos/${id}/preview`,
+  photoPreviewUrl: (id: number) => apiUrl(`/api/photos/${id}/preview`),
 
   /* Devices */
   devices: () => request<Device[]>("/api/devices"),

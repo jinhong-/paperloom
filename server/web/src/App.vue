@@ -1,15 +1,24 @@
 <script setup lang="ts">
-import { RouterLink, RouterView } from "vue-router";
+import { computed } from "vue";
+import { RouterLink, RouterView, useRouter } from "vue-router";
 
 import { useSessionStore } from "@/stores/session";
 
 const session = useSessionStore();
+const router = useRouter();
+
+/* Whether the first page is still being worked out.
+ *
+ * The page is told where to send the owner before it shows anything, and
+ * that takes a journey to and fro. Without something in its place the
+ * page would be blank until then, which looks like a fault. */
+const settling = computed(() => router.currentRoute.value.name === undefined);
 </script>
 
 <template>
   <div class="shell">
     <header class="top">
-      <RouterLink to="/galleries" class="brand">Paper<span>loom</span></RouterLink>
+      <RouterLink to="/" class="brand">Paper<span>loom</span></RouterLink>
       <nav v-if="session.signedIn()">
         <RouterLink to="/galleries">Galleries</RouterLink>
         <RouterLink to="/devices">Devices</RouterLink>
@@ -25,6 +34,7 @@ const session = useSessionStore();
       </div>
     </header>
 
-    <RouterView />
+    <RouterView v-if="!settling" />
+    <div v-else class="empty">Loading...</div>
   </div>
 </template>
