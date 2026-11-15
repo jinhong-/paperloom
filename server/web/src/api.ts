@@ -18,11 +18,11 @@ export interface Gallery {
   telegram_mode: "queue" | "latest";
   /** Whether the gallery changes its picture on its own. */
   schedule_enabled: number;
-  /** The picture shown when the gallery is off, if there is one. */
-  manual_photo_id: number | null;
   photo_count: number;
   /** How many rules the gallery has. */
   rule_count: number;
+  /** How many pictures are waiting to be shown. */
+  waiting_count: number;
 }
 
 /**
@@ -386,21 +386,21 @@ export const api = {
       { method: "DELETE" },
     ),
 
-  /* The picture a gallery shows when its schedule is off */
+  /* The pictures a gallery is going to show next */
 
-  manualPicture: (galleryId: number) =>
-    request<{
-      picture: { photo_id: number; content_hash: string; filename: string } | null;
-    }>(`/api/galleries/${galleryId}/manual-picture`),
+  showNext: (galleryId: number) =>
+    request<{ pictures: Array<{ photo_id: number; at: string; filename: string }> }>(
+      `/api/galleries/${galleryId}/show-next`,
+    ),
 
-  setManualPicture: (galleryId: number, photoId: number) =>
-    request<{ status: string }>(`/api/galleries/${galleryId}/manual-picture`, {
-      method: "PUT",
-      body: JSON.stringify({ photo_id: photoId }),
-    }),
+  showNextPicture: (galleryId: number, photoId: number) =>
+    request<{ status: string; shown_at: string | null }>(
+      `/api/galleries/${galleryId}/show-next`,
+      { method: "POST", body: JSON.stringify({ photo_id: photoId }) },
+    ),
 
-  removeManualPicture: (galleryId: number) =>
-    request<{ status: string }>(`/api/galleries/${galleryId}/manual-picture`, {
+  clearShowNext: (galleryId: number) =>
+    request<{ status: string }>(`/api/galleries/${galleryId}/show-next`, {
       method: "DELETE",
     }),
 

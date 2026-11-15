@@ -127,7 +127,7 @@ export async function buildServer(config: ServerConfig): Promise<BuiltServer> {
 
   registerDeviceApi(app, { db, assets, schedules, basePath: deviceBasePath });
   registerEnrollmentApi(app, { db, basePath: deviceBasePath });
-  registerManagementApi(app, { db, assets, schedules, basePath: managementBasePath });
+  registerManagementApi(app, { db, assets, schedules, pins, basePath: managementBasePath });
 
   /* Each gallery has its own bot, and the manager holds a poller for
    * each one. The bots ask Telegram for their updates themselves, so

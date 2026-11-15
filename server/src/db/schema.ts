@@ -738,4 +738,22 @@ ALTER TABLE galleries DROP COLUMN max_interval;
 ALTER TABLE galleries DROP COLUMN rotation_mode;
 `,
   },
+  {
+    id: "0019_show_next",
+    sql: `
+-- The picture a gallery shows next.
+--
+-- The owner can say "show this one next", and the picture is shown at the
+-- frame's next change. The schedule then carries on as it was, so the
+-- picture is shown once rather than taking the gallery's place.
+--
+-- This is the same thing a picture sent from a chat does, and it is kept
+-- in the same place, so that the frame is given both in one list.
+--
+-- The gallery's own manual picture goes: it was shown for as long as it
+-- was set, which is a different thing, and the schedule could not be
+-- used at the same time.
+DROP TABLE IF EXISTS gallery_manual_pictures;
+`,
+  },
 ];

@@ -50,8 +50,12 @@ const MAX_EVENTS = 128;
  * download is radio time and therefore power. So a battery frame is given
  * only as many assets as it needs to cover the coming period, and
  * collects the rest on later check-ins.
+ *
+ * It is more than one, because a frame that is given one asset at a time
+ * downloads the same picture again as soon as the gallery moves on, which
+ * is the same radio time spread thinner rather than saved.
  */
-const BATTERY_ASSET_LIMIT = 2;
+const BATTERY_ASSET_LIMIT = 4;
 
 /**
  * Mark a frame's pinned picture as shown, if the picture on its panel is

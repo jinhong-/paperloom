@@ -25,8 +25,8 @@ const rules = ref<GalleryScheduleRule[]>([]);
 /* Whether the gallery changes its picture on its own. */
 const scheduleEnabled = ref(true);
 
-/* The picture the gallery shows when it is off. */
-const manualPhotoId = ref<number | null>(null);
+/* The pictures that are waiting to be shown. */
+const waiting = ref<Array<{ photo_id: number; at: string; filename: string }>>([]);
 
 /* How the pictures from a chat arrive. */
 const telegramMode = ref<"queue" | "latest">("queue");
@@ -57,11 +57,11 @@ async function selectGallery(target: Gallery): Promise<void> {
   error.value = null;
   scheduleEnabled.value = target.schedule_enabled === 1;
   telegramMode.value = target.telegram_mode === "latest" ? "latest" : "queue";
-  manualPhotoId.value = target.manual_photo_id ?? null;
   try {
     photos.value = await api.photos(target.id);
     rules.value = await api.galleryScheduleRules(target.id);
     loadDrafts(rules.value);
+    waiting.value = (await api.showNext(target.id)).pictures;
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   }
@@ -192,20 +192,34 @@ async function setScheduleEnabled(enabled: boolean): Promise<void> {
 /**
  * Set the picture the gallery shows when it is off.
  */
-async function setManualPicture(photoId: number | null): Promise<void> {
+async function showNextPicture(photoId: number): Promise<void> {
   if (!selected.value) return;
   busy.value = true;
   error.value = null;
   notice.value = null;
   try {
-    if (photoId === null) {
-      await api.removeManualPicture(selected.value.id);
-      manualPhotoId.value = null;
-    } else {
-      await api.setManualPicture(selected.value.id, photoId);
-      manualPhotoId.value = photoId;
-    }
-    notice.value = "The picture was set. The frame picks it up at its next check-in.";
+    await api.showNextPicture(selected.value.id, photoId);
+    waiting.value = (await api.showNext(selected.value.id)).pictures;
+    notice.value = "The picture will be shown at the next change.";
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    busy.value = false;
+  }
+}
+
+/**
+ * Stop the pictures that are waiting from being shown.
+ */
+async function clearWaiting(): Promise<void> {
+  if (!selected.value) return;
+  busy.value = true;
+  error.value = null;
+  notice.value = null;
+  try {
+    await api.clearShowNext(selected.value.id);
+    waiting.value = [];
+    notice.value = "The pictures that were waiting will not be shown.";
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -293,6 +307,22 @@ async function uploadFiles(files: FileList | null): Promise<void> {
   } finally {
     busy.value = false;
   }
+}
+
+/**
+ * Turn a moment into a clock time.
+ *
+ * The times are in the browser's own zone, which is the one the owner is
+ * looking at them in.
+ */
+function formatTime(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
 }
 
 /**
@@ -458,10 +488,10 @@ onMounted(async () => {
           <button
             class="secondary"
             :disabled="busy"
-            :title="manualPhotoId === photo.id ? 'This is the picture it shows' : 'Show this one'"
-            @click="setManualPicture(photo.id)"
+            title="Show this one at the next change"
+            @click="showNextPicture(photo.id)"
           >
-            {{ manualPhotoId === photo.id ? "Showing" : "Show this one" }}
+            Show this next
           </button>
           <button class="danger" @click="removePhoto(photo)">Delete</button>
         </div>
@@ -510,45 +540,37 @@ onMounted(async () => {
           />
         </div>
 
-        <!-- The picture shown while the gallery is off -->
+        <!-- The pictures waiting to be shown -->
         <div class="card">
-          <h3>The picture it shows</h3>
+          <h3>Waiting to be shown</h3>
           <p class="small muted">
-            <template v-if="scheduleEnabled">
-              The gallery changes on its own schedule, but you can say which
-              picture it shows at any time by choosing one below. It stays
-              until you choose another.
-            </template>
-            <template v-else>
-              The gallery is off, so it shows this picture until you set
-              another one. The frame keeps it when it is turned off and on
-              again.
-            </template>
+            A picture that has been asked for is shown at the next change,
+            and the schedule carries on around it. This is where the
+            pictures sent from a chat are, and the ones you have chosen.
           </p>
 
-          <div v-if="photos.length === 0" class="empty">
-            No photos yet. Add one first.
+          <div v-if="waiting.length === 0" class="empty">
+            Nothing is waiting. The gallery shows its schedule.
           </div>
 
-          <div v-else class="row" style="flex-wrap: wrap; gap: 8px">
-            <button
-              v-for="photo in photos"
-              :key="photo.id"
-              class="secondary"
-              :class="{ 'is-selected': manualPhotoId === photo.id }"
-              @click="setManualPicture(photo.id)"
-            >
-              {{ photo.filename }}
-            </button>
+          <div
+            v-for="picture in waiting"
+            :key="picture.photo_id"
+            class="row between"
+            style="padding: 8px 0; border-bottom: 1px solid var(--line)"
+          >
+            <span class="grow">{{ picture.filename }}</span>
+            <span class="small muted">{{ formatTime(picture.at) }}</span>
           </div>
 
           <button
-            v-if="manualPhotoId !== null"
+            v-if="waiting.length > 0"
             class="secondary"
             style="margin-top: 8px"
-            @click="setManualPicture(null)"
+            :disabled="busy"
+            @click="clearWaiting"
           >
-            Show nothing
+            Do not show these
           </button>
         </div>
 

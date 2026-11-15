@@ -17,6 +17,7 @@ import { computed, ref, watch } from "vue";
 
 import { DAY_NAMES, DAY_SHORT } from "@/lib/dayNames";
 import {
+  coversEveryMoment,
   describeUnit,
   frequencyInSeconds,
   frequencyLimit,
@@ -57,7 +58,6 @@ const startMinute = ref(0);
 const endMinute = ref(1440);
 const count = ref(60);
 const unit = ref<FrequencyUnit>("minutes");
-const still = ref(false);
 const rotationMode = ref<"random" | "sequential">("random");
 
 /* The hours of the rule being written, as they are typed. */
@@ -69,14 +69,27 @@ const dayMask = computed(() =>
   days.value.reduce((bits, day) => bits | (1 << day), 0),
 );
 
-/* How often the picture may change, given the days that were chosen. */
-const limitSeconds = computed(() => frequencyLimit(dayMask.value));
+/* How often the picture may change, given the days and hours that were
+ * chosen. A rule that applies at every moment has no limit. */
+const limitSeconds = computed(() =>
+  frequencyLimit(dayMask.value, startMinute.value, endMinute.value),
+);
 
 /* Whether the frequency that was chosen is within the limit. */
-const withinLimit = computed(() => {
-  if (still.value) return true;
-  return frequencyWithinLimit(count.value, unit.value, dayMask.value);
-});
+const withinLimit = computed(() =>
+  frequencyWithinLimit(
+    count.value,
+    unit.value,
+    dayMask.value,
+    startMinute.value,
+    endMinute.value,
+  ),
+);
+
+/* Whether the rule being written applies at every moment. */
+const coversEverything = computed(() =>
+  coversEveryMoment(dayMask.value, startMinute.value, endMinute.value),
+);
 
 /* The limit, said in the unit the owner chose where possible. */
 const limitText = computed(() => {
@@ -142,7 +155,7 @@ function addRule(): void {
     days: dayMask.value,
     startMinute: startMinute.value,
     endMinute: endMinute.value,
-    intervalSeconds: still.value ? null : frequencyInSeconds(count.value, unit.value),
+    intervalSeconds: frequencyInSeconds(count.value, unit.value),
     rotationMode: rotationMode.value,
   };
 
@@ -294,12 +307,7 @@ watch(
         </div>
       </div>
 
-      <label class="check small">
-        <input v-model="still" type="checkbox" />
-        Nothing is shown during these hours
-      </label>
-
-      <div v-if="!still" class="row">
+      <div class="row">
         <div class="field grow">
           <label for="rule-count">Change the picture every</label>
           <input id="rule-count" v-model.number="count" type="number" min="1" />
@@ -335,6 +343,12 @@ watch(
       <div v-if="!withinLimit" class="error small">
         The picture cannot change less often than {{ limitText }}, because
         it can only change on the days chosen.
+      </div>
+
+      <div v-if="coversEverything" class="small muted">
+        This rule applies at every moment, so there is no limit on how
+        often the picture changes. It also overrides the other rules, so
+        there can only be one of these.
       </div>
 
       <button :disabled="!withinLimit" @click="addRule">Add rule</button>

@@ -165,11 +165,6 @@ export class AssetStore {
       .get(contentHash);
     if (inAFrame) return false;
 
-    const isSetAside = this.db
-      .prepare("SELECT 1 FROM gallery_manual_pictures WHERE content_hash = ? LIMIT 1")
-      .get(contentHash);
-    if (isSetAside) return false;
-
     await rm(this.pathFor(contentHash), { force: true });
     this.db.prepare("DELETE FROM assets WHERE content_hash = ?").run(contentHash);
     return true;

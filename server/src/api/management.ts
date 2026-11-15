@@ -17,12 +17,21 @@ import { EVERY_DAY } from "../schedule/rules.js";
 import { isRotation } from "../panel.js";
 import { PRESETS } from "../tone.js";
 import { GalleryPhotoService } from "../gallery/photos.js";
+import { PinnedPhotoService } from "../gallery/pinned.js";
+import { coversEveryMoment } from "../schedule/frequency.js";
 
 export interface ManagementOptions {
   readonly db: Db;
   readonly assets: AssetStore;
   readonly schedules: ScheduleService;
   readonly basePath: string;
+  /**
+   * The pictures waiting to be shown.
+   *
+   * The management page can say "show this one next", which is the same
+   * thing a picture sent from a chat does.
+   */
+  readonly pins?: PinnedPhotoService;
 }
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -44,7 +53,7 @@ interface GalleryRuleBody {
 }
 
 export function registerManagementApi(app: FastifyInstance, options: ManagementOptions): void {
-  const { db, assets, schedules, basePath } = options;
+  const { db, assets, schedules, basePath, pins } = options;
 
   /* Adding a photo is shared with the Telegram bot, so it lives in one
    * place rather than being written out here as well. */
@@ -131,8 +140,30 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
 
   /**
    * Add a rule to a gallery.
+   *
+   * There can only be one rule that covers every moment. Such a rule
+   * applies everywhere, so it would override every other rule, and
+   * having two of them would make the picture change at two different
+   * rates depending on which one the server happened to look at first.
    */
   function insertRule(galleryId: number, body: GalleryRuleBody): void {
+    const days = body.days ?? 127;
+    const startMinute = body.start_minute ?? 0;
+    const endMinute = body.end_minute ?? 1440;
+
+    if (coversEveryMoment(days, startMinute, endMinute)) {
+      const existing = db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM gallery_schedule_rules
+           WHERE gallery_id = ? AND days = 127 AND start_minute = 0 AND end_minute = 1440`,
+        )
+        .get(galleryId) as { n: number };
+
+      if (existing.n > 0) {
+        throw new Error("there is already a rule that covers every moment");
+      }
+    }
+
     db.prepare(
       `INSERT INTO gallery_schedule_rules
          (gallery_id, days, start_minute, end_minute, min_interval, max_interval,
@@ -140,9 +171,9 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       galleryId,
-      body.days ?? 127,
-      body.start_minute ?? 0,
-      body.end_minute ?? 1440,
+      days,
+      startMinute,
+      endMinute,
       body.min_interval ?? null,
       body.max_interval ?? null,
       body.priority ?? 0,
@@ -443,8 +474,9 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
                 g.schedule_enabled,
                 (SELECT COUNT(*) FROM photos p WHERE p.gallery_id = g.id) AS photo_count,
                 (SELECT COUNT(*) FROM gallery_schedule_rules r WHERE r.gallery_id = g.id) AS rule_count,
-                (SELECT mp.photo_id FROM gallery_manual_pictures mp WHERE mp.gallery_id = g.id)
-                  AS manual_photo_id
+                (SELECT COUNT(*) FROM pinned_photos pp
+                   JOIN devices d ON d.id = pp.device_id
+                  WHERE d.gallery_id = g.id AND pp.shown = 0) AS waiting_count
          FROM galleries g
          WHERE g.user_id = ?
          ORDER BY g.name`,
@@ -482,7 +514,14 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
         await reply.code(400).send({ error: "the rule does not make sense" });
         return;
       }
-      insertRule(galleryId, rule);
+      try {
+        insertRule(galleryId, rule);
+      } catch (error) {
+        await reply.code(400).send({
+          error: error instanceof Error ? error.message : "the rule does not make sense",
+        });
+        return;
+      }
     }
 
     if (body.schedule_enabled === false) {
@@ -614,7 +653,14 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       return;
     }
 
-    insertRule(Number(id), body);
+    try {
+      insertRule(Number(id), body);
+    } catch (error) {
+      await reply.code(400).send({
+        error: error instanceof Error ? error.message : "the rule does not make sense",
+      });
+      return;
+    }
 
     invalidateGallery(Number(id));
 
@@ -642,6 +688,41 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
     if (!validRule(body)) {
       await reply.code(400).send({ error: "the rule does not make sense" });
       return;
+    }
+
+    /* Changing a rule so that it covers every moment would leave two
+     * rules that apply everywhere, and the picture would change at two
+     * different rates. */
+    const current = db
+      .prepare(
+        `SELECT days, start_minute, end_minute FROM gallery_schedule_rules
+         WHERE id = ? AND gallery_id = ?`,
+      )
+      .get(Number(ruleId), Number(id)) as
+      | { days: number; start_minute: number; end_minute: number }
+      | undefined;
+
+    if (current) {
+      const days = body.days ?? current.days;
+      const startMinute = body.start_minute ?? current.start_minute;
+      const endMinute = body.end_minute ?? current.end_minute;
+
+      if (coversEveryMoment(days, startMinute, endMinute)) {
+        const others = db
+          .prepare(
+            `SELECT COUNT(*) AS n FROM gallery_schedule_rules
+             WHERE gallery_id = ? AND id != ?
+               AND days = 127 AND start_minute = 0 AND end_minute = 1440`,
+          )
+          .get(Number(id), Number(ruleId)) as { n: number };
+
+        if (others.n > 0) {
+          await reply.code(400).send({
+            error: "there is already a rule that covers every moment",
+          });
+          return;
+        }
+      }
     }
 
     const fields: string[] = [];
@@ -704,12 +785,13 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
   // ---------------------------------------------------------------------
 
   /**
-   * The picture a gallery shows when it has no schedule.
+   * The pictures a gallery is going to show next.
    *
-   * A gallery with no rules changes only when the owner says so. This is
-   * the picture it shows then.
+   * These are the pictures that have been asked for and are waiting for
+   * their moment: the ones sent from a chat, and the ones the owner has
+   * chosen by hand.
    */
-  app.get(`${basePath}/galleries/:id/manual-picture`, async (request, reply) => {
+  app.get(`${basePath}/galleries/:id/show-next`, async (request, reply) => {
     const userId = await requireUser(request, reply);
     if (userId === null) return;
 
@@ -722,27 +804,28 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       return;
     }
 
-    const manual = db
+    const rows = db
       .prepare(
-        `SELECT mp.photo_id, mp.content_hash, p.filename
-         FROM gallery_manual_pictures mp
-         JOIN photos p ON p.id = mp.photo_id
-         WHERE mp.gallery_id = ?`,
+        `SELECT pp.photo_id, pp.at, p.filename
+         FROM pinned_photos pp
+         JOIN photos p ON p.id = pp.photo_id
+         JOIN devices d ON d.id = pp.device_id
+         WHERE d.gallery_id = ? AND pp.shown = 0
+         ORDER BY pp.at`,
       )
-      .get(Number(id)) as
-      | { photo_id: number; content_hash: string; filename: string }
-      | undefined;
+      .all(Number(id)) as Array<{ photo_id: number; at: number; filename: string }>;
 
-    await reply.send({ picture: manual ?? null });
+    await reply.send({ pictures: rows });
   });
 
   /**
-   * Set the picture a gallery shows when it has no schedule.
+   * Say that a gallery should show one of its pictures next.
    *
-   * The picture has to be one of the gallery's own, so that it is
-   * rendered for the panel in the first place.
+   * The picture is shown at the frame's next change, and the schedule then
+   * carries on as it was. This works whether the gallery has a schedule
+   * of its own or not.
    */
-  app.put(`${basePath}/galleries/:id/manual-picture`, async (request, reply) => {
+  app.post(`${basePath}/galleries/:id/show-next`, async (request, reply) => {
     const userId = await requireUser(request, reply);
     if (userId === null) return;
 
@@ -761,36 +844,33 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       return;
     }
 
+    if (!pins) {
+      await reply.code(501).send({ error: "pictures waiting to be shown are not set up" });
+      return;
+    }
+
+    /* The picture has to be one of the gallery's own, so that it is
+     * rendered for the panel in the first place. */
     const photo = db
-      .prepare("SELECT id, content_hash FROM photos WHERE id = ? AND gallery_id = ?")
-      .get(body.photo_id, Number(id)) as { id: number; content_hash: string | null } | undefined;
+      .prepare("SELECT id FROM photos WHERE id = ? AND gallery_id = ?")
+      .get(body.photo_id, Number(id)) as { id: number } | undefined;
     if (!photo) {
       await reply.code(404).send({ error: "unknown photo" });
       return;
     }
-    if (!photo.content_hash) {
-      await reply.code(400).send({ error: "the photo has not been rendered yet" });
-      return;
+
+    const made = pins.pinForGallery(Number(id), photo.id, Date.now());
+    for (const pin of made) {
+      schedules.addPinnedEvent(pin.device_id, pin.at, pin.photo_id);
     }
 
-    db.prepare(
-      `INSERT INTO gallery_manual_pictures (gallery_id, photo_id, content_hash)
-       VALUES (?, ?, ?)
-       ON CONFLICT(gallery_id) DO UPDATE SET
-         photo_id = excluded.photo_id,
-         content_hash = excluded.content_hash,
-         updated_at = datetime('now')`,
-    ).run(Number(id), photo.id, photo.content_hash);
-
-    invalidateGallery(Number(id));
-
-    await reply.send({ status: "ok" });
+    await reply.send({ status: "ok", shown_at: made[0]?.at ?? null });
   });
 
   /**
-   * Stop the gallery showing a set picture.
+   * Stop a gallery showing the pictures that are waiting.
    */
-  app.delete(`${basePath}/galleries/:id/manual-picture`, async (request, reply) => {
+  app.delete(`${basePath}/galleries/:id/show-next`, async (request, reply) => {
     const userId = await requireUser(request, reply);
     if (userId === null) return;
 
@@ -803,7 +883,11 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       return;
     }
 
-    db.prepare("DELETE FROM gallery_manual_pictures WHERE gallery_id = ?").run(Number(id));
+    db.prepare(
+      `DELETE FROM pinned_photos
+       WHERE shown = 0
+         AND device_id IN (SELECT id FROM devices WHERE gallery_id = ?)`,
+    ).run(Number(id));
 
     invalidateGallery(Number(id));
 
