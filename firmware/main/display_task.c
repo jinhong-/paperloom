@@ -35,49 +35,68 @@ static uint8_t *s_frame = NULL;
 /* The panel needs a reset and init sequence before each update. */
 static bool s_panel_ready = false;
 
-/* Where the flag saying the ready screen has been shown is kept.
+/* Where the record of what is on the panel is kept.
  *
  * It has to survive a restart, because the screen should be drawn once
  * and not on every wake: a refresh of an e-paper panel takes a quarter
- * of a minute and uses up the panel's life. */
+ * of a minute and uses up the panel's life.
+ *
+ * It records which screen is on the panel rather than only that the
+ * ready screen has been shown, because the two screens replace one
+ * another. A frame that has been claimed must not be left showing a
+ * claim code, and a frame that is waiting to be claimed must not be
+ * told it is ready. */
 #define NVS_NAMESPACE "paperloom"
-#define NVS_KEY_READY_SHOWN "ready_shown"
+#define NVS_KEY_SCREEN "screen"
 
 /**
- * Whether the ready screen has been shown.
+ * The screens the frame can put on the panel when it has no picture to
+ * show.
  */
-static bool s_ready_shown = false;
+typedef enum {
+    /* Nothing has been put on the panel yet. */
+    SCREEN_NONE = 0,
+    /* The screen with the claim code on it. */
+    SCREEN_CLAIM = 1,
+    /* The screen that says the frame is ready. */
+    SCREEN_READY = 2,
+} panel_screen_t;
 
 /**
- * Read the flag back after a restart.
+ * Which screen is on the panel.
  */
-static void ready_shown_restore(void) {
+static panel_screen_t s_screen = SCREEN_NONE;
+
+/**
+ * Read the record back after a restart.
+ */
+static void screen_restore(void) {
     nvs_handle_t nvs;
     if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
         return;
     }
-    uint8_t shown = 0;
-    if (nvs_get_u8(nvs, NVS_KEY_READY_SHOWN, &shown) == ESP_OK) {
-        s_ready_shown = shown != 0;
+    uint8_t screen = 0;
+    if (nvs_get_u8(nvs, NVS_KEY_SCREEN, &screen) == ESP_OK) {
+        s_screen = (panel_screen_t)screen;
     }
     nvs_close(nvs);
 }
 
 /**
- * Remember that the ready screen has been shown.
+ * Remember which screen is on the panel.
  */
-static void ready_shown_store(void) {
+static void screen_store(void) {
     nvs_handle_t nvs;
     if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) != ESP_OK) {
         return;
     }
-    nvs_set_u8(nvs, NVS_KEY_READY_SHOWN, 1);
+    nvs_set_u8(nvs, NVS_KEY_SCREEN, (uint8_t)s_screen);
     nvs_commit(nvs);
     nvs_close(nvs);
 }
 
 esp_err_t display_task_init(void) {
-    ready_shown_restore();
+    screen_restore();
 
     if (s_frame == NULL) {
         s_frame = heap_caps_malloc(PANEL_FRAME_BYTES, MALLOC_CAP_SPIRAM);
@@ -285,6 +304,8 @@ display_result_t display_task_show_claim_screen(const char *claim_code, const ch
 
     setup_screen_draw_claim(s_frame, claim_code, claim_url);
     epaper_display(s_frame);
+    s_screen = SCREEN_CLAIM;
+    screen_store();
     return DISPLAY_OK;
 }
 
@@ -301,8 +322,8 @@ display_result_t display_task_show_ready_screen(const char *dashboard_url) {
 
     setup_screen_draw_ready(s_frame, dashboard_url);
     epaper_display(s_frame);
-    s_ready_shown = true;
-    ready_shown_store();
+    s_screen = SCREEN_READY;
+    screen_store();
     return DISPLAY_OK;
 }
 
@@ -314,7 +335,29 @@ display_result_t display_task_show_ready_screen(const char *dashboard_url) {
  * otherwise, which would use up its life for nothing.
  */
 bool display_task_ready_shown(void) {
-    return s_ready_shown;
+    return s_screen == SCREEN_READY;
+}
+
+/**
+ * Whether the claim screen is on the panel.
+ *
+ * The frame shows it while it is waiting to be claimed, and takes it
+ * down as soon as it has been claimed.
+ */
+bool display_task_claim_screen_shown(void) {
+    return s_screen == SCREEN_CLAIM;
+}
+
+/**
+ * Forget that the ready screen has been shown.
+ *
+ * The frame has just been claimed, and the panel is showing the claim
+ * code. The ready screen replaces it, so the flag is cleared to let it be
+ * drawn.
+ */
+void display_task_forget_ready_screen(void) {
+    s_screen = SCREEN_NONE;
+    screen_store();
 }
 
 /**

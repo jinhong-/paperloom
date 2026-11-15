@@ -76,6 +76,23 @@ display_result_t display_task_show_ready_screen(const char *dashboard_url);
 bool display_task_ready_shown(void);
 
 /**
+ * Forget that the ready screen has been shown.
+ *
+ * The frame has just been claimed, and the panel is showing the claim
+ * code. The ready screen replaces it, so the flag is cleared to let it be
+ * drawn.
+ */
+void display_task_forget_ready_screen(void);
+
+/**
+ * Whether the claim screen is on the panel.
+ *
+ * The frame shows it while it is waiting to be claimed, and takes it
+ * down as soon as it has been claimed.
+ */
+bool display_task_claim_screen_shown(void);
+
+/**
  * Power the panel down before sleeping.
  */
 void display_task_prepare_sleep(void);

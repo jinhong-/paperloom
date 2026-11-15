@@ -386,6 +386,20 @@ static int64_t run_cycle(wake_reason_t reason) {
                                &claimed)) {
                     if (claimed) {
                         ESP_LOGI(TAG, "The device has been claimed");
+
+                        /* The code on the panel has done its work, and
+                         * must not be left there. The screen is cleared,
+                         * so that the frame goes back to being a frame
+                         * rather than a frame with a claim code on it.
+                         *
+                         * The screen that replaces it is drawn further
+                         * down, when there is nothing to show yet. It is
+                         * forced, because the ready screen may have been
+                         * shown already, before the frame was claimed,
+                         * and the panel would otherwise be left showing
+                         * the code. */
+                        s_shown_claim_code[0] = '\0';
+                        display_task_forget_ready_screen();
                     } else {
                         ESP_LOGI(TAG, "Waiting to be claimed; the claim code is %s", claim_code);
 
@@ -409,6 +423,19 @@ static int64_t run_cycle(wake_reason_t reason) {
                 /* The sync has happened, so the request for one is
                  * fulfilled and can be forgotten. */
                 sync_clear_forced_request();
+
+                /* The frame is the server's now, and it is not waiting to
+                 * be claimed any more. The claim code on the panel has
+                 * done its work and must not be left there.
+                 *
+                 * The panel is refreshed further down, when there is
+                 * nothing to show yet. All that is done here is to
+                 * forget what was on it, so that the right screen is
+                 * drawn. */
+                if (!sync_needs_enrol() && display_task_claim_screen_shown()) {
+                    ESP_LOGI(TAG, "The frame has been claimed; the claim code comes off the panel");
+                    display_task_forget_ready_screen();
+                }
 
                 /* The server may have corrected the clock, so the due
                  * check is redone against the current time rather than
