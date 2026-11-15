@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.1](https://github.com/jinhong-/paperloom/compare/paperloom-v0.3.0...paperloom-v0.3.1) (2026-11-15)
+
+
+### Bug Fixes
+
+* the add-on's data directory in the image ([52576aa](https://github.com/jinhong-/paperloom/commit/52576aa5fb4311990a4ae94525f2cad73337dd28))
+* **web:** reach the server through Home Assistant's path prefix ([576011d](https://github.com/jinhong-/paperloom/commit/576011d88ee396268d7ffa15eeb0242ef79f2694))
+
 ## [0.3.0](https://github.com/jinhong-/paperloom/compare/paperloom-v0.2.0...paperloom-v0.3.0) (2026-11-15)
 
 
