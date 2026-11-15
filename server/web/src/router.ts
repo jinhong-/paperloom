@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from "vue-router";
 
 import { useSessionStore } from "@/stores/session";
+import { appBase } from "@/lib/base";
 import ClaimView from "@/views/ClaimView.vue";
 import DevicesView from "@/views/DevicesView.vue";
 import GalleriesView from "@/views/GalleriesView.vue";
@@ -22,7 +23,14 @@ import TelegramView from "@/views/TelegramView.vue";
 const publicRoutes = new Set(["login", "invitation", "claim", "setup"]);
 
 export const router = createRouter({
-  history: createWebHistory(import.meta.env.BASE_URL),
+  /* The base has to be the prefix the app is served from, worked out
+   * from the script's own address.
+   *
+   * The build's base is relative, and a relative base is resolved once,
+   * when the router is made, which is before the app knows where it is.
+   * The pages it links to then point at the root rather than at the
+   * prefix, and the app goes nowhere when they are followed. */
+  history: createWebHistory(appBase()),
   routes: [
     /* The root shows the galleries.
      *
