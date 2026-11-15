@@ -286,7 +286,10 @@ test("a rule's own interval is used while it covers the moment", () => {
   }
 });
 
-test("a gallery that is off shows the picture that was set by hand", () => {
+test("a gallery that is off shows nothing of its own", () => {
+  /* The picture the owner chose is a pin, and a pin is shown at its own
+   * moment. A gallery that is off has no rules, so there is nothing else
+   * to put in the window. */
   const events = materializeSchedule({
     deviceId: "1",
     windowStart,
@@ -294,52 +297,34 @@ test("a gallery that is off shows the picture that was set by hand", () => {
     galleries: [
       gallery({
         scheduleEnabled: false,
-        manualAsset: "the-picture-the-owner-chose",
       }),
     ],
     policy,
   });
 
-  assert.equal(events.length, 1, "only the picture that was set is shown");
-  assert.equal(events[0]!.asset, "the-picture-the-owner-chose");
+  assert.equal(events.length, 0, "there is nothing to show");
 });
 
-test("a gallery that is off and has no picture shows nothing", () => {
+test("a picture the owner chose is shown at its own moment", () => {
+  /* "Show this one next" is the same thing a picture sent from a chat
+   * does: it is shown at a moment of its own, and the schedule carries
+   * on around it. */
+  const start = Date.UTC(2026, 0, 1, 6, 0, 0);
   const events = materializeSchedule({
     deviceId: "1",
-    windowStart,
+    windowStart: start,
     candidates,
-    galleries: [
-      gallery({
-        scheduleEnabled: false,
-        manualAsset: null,
-      }),
-    ],
+    galleries: [gallery()],
+    pinned: [{ at: start + 1800 * 1000, contentHash: "the-picture-the-owner-chose" }],
     policy,
   });
 
-  assert.equal(events.length, 0, "there is no picture to show");
-});
+  const chosen = events.find((e) => e.asset === "the-picture-the-owner-chose");
+  assert.ok(chosen, "the picture must be in the plan");
+  assert.equal(chosen!.at, start + 1800 * 1000, "it is shown at its own moment");
 
-test("a gallery that is on shows the picture that was set by hand first", () => {
-  /* The owner says "show this one now", without turning the gallery off.
-   * The picture is shown at the start of the window, and the gallery then
-   * carries on with its rules. */
-  const events = materializeSchedule({
-    deviceId: "1",
-    windowStart,
-    candidates,
-    galleries: [
-      gallery({
-        scheduleEnabled: true,
-        manualAsset: "the-picture-the-owner-chose",
-      }),
-    ],
-    policy,
-  });
-
-  assert.ok(events.length > 1, "the picture is shown and then the rules carry on");
-  assert.equal(events[0]!.asset, "the-picture-the-owner-chose");
+  /* The schedule is still there around it. */
+  assert.ok(events.length > 1, "the schedule carries on");
 });
 
 test("a gallery that is on but has no rules shows nothing", () => {

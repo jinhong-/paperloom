@@ -160,12 +160,42 @@ export function shortestRun(days: number): number {
  * changes less often than the shortest run of days it names would leave
  * the picture unchanged for longer than the owner asked for.
  *
- * A rule that names no days has no limit: it never applies.
+ * A rule that covers every day and all day has no limit. It applies at
+ * every moment, so the picture can change whenever the owner likes, and
+ * a frequency of sixty days is as good as one of sixty minutes.
+ *
+ * A rule that names no days has no limit either: it never applies.
+ *
+ * @param days        A bit mask of the days of the week.
+ * @param startMinute Minutes from local midnight.
+ * @param endMinute   Minutes from local midnight.
  */
-export function frequencyLimit(days: number): number | null {
+export function frequencyLimit(
+  days: number,
+  startMinute = 0,
+  endMinute = 1440,
+): number | null {
+  /* A rule that applies at every moment has no limit. */
+  if (coversEveryMoment(days, startMinute, endMinute)) return null;
+
   const run = shortestRun(days);
   if (run === 0) return null;
   return run * SECONDS_IN.days;
+}
+
+/**
+ * Whether a rule applies at every moment of the week.
+ *
+ * It has to name every day and cover the whole day.
+ */
+export function coversEveryMoment(
+  days: number,
+  startMinute: number,
+  endMinute: number,
+): boolean {
+  const everyDay = CALENDAR_BITS.every((bit) => (days & bit) !== 0);
+  const wholeDay = startMinute === 0 && endMinute === 1440;
+  return everyDay && wholeDay;
 }
 
 /**
@@ -174,8 +204,13 @@ export function frequencyLimit(days: number): number | null {
  * @param frequency The frequency the rule asks for.
  * @param days      The days the rule applies to.
  */
-export function frequencyWithinLimit(frequency: Frequency, days: number): boolean {
-  const limit = frequencyLimit(days);
+export function frequencyWithinLimit(
+  frequency: Frequency,
+  days: number,
+  startMinute = 0,
+  endMinute = 1440,
+): boolean {
+  const limit = frequencyLimit(days, startMinute, endMinute);
   if (limit === null) return true;
   return frequencyInSeconds(frequency) <= limit;
 }

@@ -241,6 +241,192 @@ test("a rule has to make sense", async (t) => {
   assert.equal(still.statusCode, 200);
 });
 
+test("a picture can be asked for by hand, and is shown next", async (t) => {
+  const server = await makeServer();
+  t.after(async () => {
+    await server.app.close();
+  });
+
+  const cookie = await signIn(server);
+
+  const created = await server.app.inject({
+    method: "POST",
+    url: "/api/galleries",
+    headers: { cookie },
+    payload: { name: "Gallery" },
+  });
+  const galleryId = (created.json() as { id: number }).id;
+
+  /* A picture of the gallery's own, so that it is rendered for the
+   * panel. */
+  const photo = server.db
+    .prepare(
+      `INSERT INTO photos (gallery_id, filename, source_hash, content_hash, width, height, byte_size, weight)
+       VALUES (?, 'a.png', 'src', 'hash-a', 1200, 1600, 10, 1.0)`,
+    )
+    .run(galleryId);
+
+  /* A frame showing the gallery. A picture is asked of the frames, so
+   * there has to be one for it to be asked of. */
+  server.db
+    .prepare("INSERT INTO devices (user_id, name, device_id) VALUES (1, 'Frame', 'dev-1')")
+    .run();
+  const deviceId = (
+    server.db.prepare("SELECT id FROM devices WHERE device_id = 'dev-1'").get() as { id: number }
+  ).id;
+  server.db
+    .prepare("UPDATE devices SET gallery_id = ? WHERE id = ?")
+    .run(galleryId, deviceId);
+  server.db.prepare("INSERT INTO device_policies (device_id) VALUES (?)").run(deviceId);
+
+  const asked = await server.app.inject({
+    method: "POST",
+    url: `/api/galleries/${galleryId}/show-next`,
+    headers: { cookie },
+    payload: { photo_id: Number(photo.lastInsertRowid) },
+  });
+  assert.equal(asked.statusCode, 200, asked.body);
+
+  /* The picture is waiting to be shown. */
+  const waiting = await server.app.inject({
+    method: "GET",
+    url: `/api/galleries/${galleryId}/show-next`,
+    headers: { cookie },
+  });
+  const listed = waiting.json() as { pictures: Array<{ photo_id: number }> };
+  assert.equal(listed.pictures.length, 1, "the picture must be waiting");
+  assert.equal(listed.pictures[0]!.photo_id, Number(photo.lastInsertRowid));
+
+  /* And it can be taken back. */
+  const cleared = await server.app.inject({
+    method: "DELETE",
+    url: `/api/galleries/${galleryId}/show-next`,
+    headers: { cookie },
+  });
+  assert.equal(cleared.statusCode, 200);
+
+  const after = await server.app.inject({
+    method: "GET",
+    url: `/api/galleries/${galleryId}/show-next`,
+    headers: { cookie },
+  });
+  assert.equal((after.json() as { pictures: unknown[] }).pictures.length, 0);
+});
+
+test("a pin is not marked shown before its moment", async (t) => {
+  const server = await makeServer();
+  t.after(async () => {
+    await server.app.close();
+  });
+
+  const cookie = await signIn(server);
+
+  const created = await server.app.inject({
+    method: "POST",
+    url: "/api/galleries",
+    headers: { cookie },
+    payload: { name: "Gallery" },
+  });
+  const galleryId = (created.json() as { id: number }).id;
+
+  server.db
+    .prepare(
+      `INSERT INTO photos (gallery_id, filename, source_hash, content_hash, width, height, byte_size, weight)
+       VALUES (?, 'a.png', 'src', 'hash-a', 1200, 1600, 10, 1.0)`,
+    )
+    .run(galleryId);
+  server.db
+    .prepare("INSERT INTO devices (user_id, name, device_id) VALUES (1, 'Frame', 'dev-1')")
+    .run();
+  const deviceId = (
+    server.db.prepare("SELECT id FROM devices WHERE device_id = 'dev-1'").get() as { id: number }
+  ).id;
+  server.db
+    .prepare("UPDATE devices SET gallery_id = ? WHERE id = ?")
+    .run(galleryId, deviceId);
+  server.db.prepare("INSERT INTO device_policies (device_id) VALUES (?)").run(deviceId);
+
+  /* A picture asked for, for a moment well in the future. */
+  server.db
+    .prepare(
+      `INSERT INTO pinned_photos (device_id, photo_id, at) VALUES (?, ?, ?)`,
+    )
+    .run(deviceId, 1, Date.now() + 60 * 60 * 1000);
+
+  /* The frame says it is showing that picture, which it did earlier in
+   * the rotation, before the picture was asked for. It has not shown the
+   * one that was asked for. */
+  const { markPinShown } = await import("./device.js");
+  markPinShown(server.db, deviceId, "hash-a");
+
+  const pin = server.db
+    .prepare("SELECT shown FROM pinned_photos WHERE device_id = ?")
+    .get(deviceId) as { shown: number };
+  assert.equal(pin.shown, 0, "a pin must not be marked shown before its moment");
+});
+
+test("there can only be one rule that covers every moment", async (t) => {
+  const server = await makeServer();
+  t.after(async () => {
+    await server.app.close();
+  });
+
+  const cookie = await signIn(server);
+
+  const created = await server.app.inject({
+    method: "POST",
+    url: "/api/galleries",
+    headers: { cookie },
+    payload: { name: "Gallery" },
+  });
+  const galleryId = (created.json() as { id: number }).id;
+
+  /* A rule that applies at every moment. */
+  const first = await server.app.inject({
+    method: "POST",
+    url: `/api/galleries/${galleryId}/schedule-rules`,
+    headers: { cookie },
+    payload: {
+      days: 127,
+      start_minute: 0,
+      end_minute: 1440,
+      min_interval: 3600,
+      max_interval: 3600,
+    },
+  });
+  assert.equal(first.statusCode, 200, first.body);
+
+  /* A second one would override the first, so it is refused. */
+  const second = await server.app.inject({
+    method: "POST",
+    url: `/api/galleries/${galleryId}/schedule-rules`,
+    headers: { cookie },
+    payload: {
+      days: 127,
+      start_minute: 0,
+      end_minute: 1440,
+      min_interval: 7200,
+      max_interval: 7200,
+    },
+  });
+  assert.equal(second.statusCode, 400);
+
+  /* A rule that covers part of the time is fine. */
+  const third = await server.app.inject({
+    method: "POST",
+    url: `/api/galleries/${galleryId}/schedule-rules`,
+    headers: { cookie },
+    payload: {
+      days: 127,
+      start_minute: 540,
+      end_minute: 1080,
+      min_interval: 3600,
+      max_interval: 3600,
+    },
+  });
+  assert.equal(third.statusCode, 200, third.body);
+});
+
 test("the rules of a gallery are read back in the same shape", async (t) => {
   const server = await makeServer();
   t.after(async () => {

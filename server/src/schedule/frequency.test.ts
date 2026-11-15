@@ -72,7 +72,9 @@ describe("the runs of days a rule names", () => {
 
 describe("the limit a rule's days place on its frequency", () => {
   it("allows a change every day for a rule that names every day", () => {
-    assert.equal(frequencyLimit(127), 7 * 24 * 60 * 60);
+    /* A rule that names every day but only covers the evening is still
+     * limited, because the picture can only change in the evening. */
+    assert.equal(frequencyLimit(127, 1080, 1320), 7 * 24 * 60 * 60);
   });
 
   it("allows a change every five days for a rule that names the weekdays", () => {
@@ -87,6 +89,23 @@ describe("the limit a rule's days place on its frequency", () => {
 
   it("has no limit for a rule that names no days", () => {
     assert.equal(frequencyLimit(0), null);
+  });
+
+  it("has no limit for a rule that applies at every moment", () => {
+    /* A rule that names every day and covers the whole day applies
+     * everywhere, so the picture can change whenever the owner likes. A
+     * frequency of sixty days is as good as one of sixty minutes. */
+    assert.equal(frequencyLimit(127, 0, 1440), null);
+    assert.equal(
+      frequencyWithinLimit({ count: 60, unit: "days" }, 127, 0, 1440),
+      true,
+    );
+  });
+
+  it("still limits a rule that names every day but not the whole day", () => {
+    /* The rule only applies in the evening, so the picture can only
+     * change then. */
+    assert.equal(frequencyLimit(127, 1080, 1320), 7 * 24 * 60 * 60);
   });
 
   it("refuses a frequency longer than the limit", () => {

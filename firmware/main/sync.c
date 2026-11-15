@@ -347,6 +347,25 @@ static void claimed_store(void) {
 }
 
 /**
+ * Forget that the device has been claimed.
+ *
+ * The server does not know this frame, so it has to be claimed again.
+ * This is what happens to a frame that has been pointed at a different
+ * server.
+ */
+static void claimed_clear(void) {
+    s_claimed = false;
+
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) != ESP_OK) {
+        return;
+    }
+    nvs_erase_key(nvs, NVS_KEY_CLAIMED);
+    nvs_commit(nvs);
+    nvs_close(nvs);
+}
+
+/**
  * Read the flag back after a sleep.
  */
 static void claimed_restore(void) {
@@ -1139,6 +1158,23 @@ sync_result_t sync_perform(const int64_t *now_ms) {
         ESP_LOGW(TAG, "The server says the clock is out of the window it accepts");
         s_clock_rejected = true;
         time_invalidate();
+        free(response);
+        return SYNC_ERROR;
+    }
+
+    /* The server says it does not know this frame.
+     *
+     * A frame that has been claimed by one server and is now pointed at
+     * another has to be claimed again by the new one: the new server has
+     * never seen it, and it will refuse every request until somebody
+     * claims it there.
+     *
+     * So the frame forgets that it was claimed, and enrols again. The
+     * claim code it shows is the one the new server is holding, so the
+     * owner can claim it there in the ordinary way. */
+    if (status == 401) {
+        ESP_LOGW(TAG, "The server does not know this frame; enrolling again");
+        claimed_clear();
         free(response);
         return SYNC_ERROR;
     }

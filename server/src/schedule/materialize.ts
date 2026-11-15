@@ -68,19 +68,13 @@ export interface GalleryPolicy {
   /**
    * Whether the gallery changes its picture on its own.
    *
-   * A gallery that is off changes only when the owner sets the picture by
-   * hand. It is a setting rather than something worked out from the
-   * rules, because a gallery that has just been made has no rules yet,
-   * and that is not the same as a gallery that has been turned off.
+   * A gallery that is off changes only when the owner says so, by asking
+   * for a picture to be shown next. It is a setting rather than something
+   * worked out from the rules, because a gallery that has just been made
+   * has no rules yet, and that is not the same as a gallery that has been
+   * turned off.
    */
   readonly scheduleEnabled?: boolean;
-  /**
-   * The picture the owner has set by hand.
-   *
-   * It is used when the gallery is off, and is the only picture the
-   * frame is given.
-   */
-  readonly manualAsset?: string | null;
 }
 
 /** A device's sync and quiet-hours policy. */
@@ -383,22 +377,12 @@ export function materializeSchedule(input: MaterializeInput): DisplayEvent[] {
     turns += 1;
     const gallery = galleries[rng.below(galleries.length)]!;
 
-    /* The picture the owner has set by hand is shown first.
+    /* A gallery that is off shows nothing at all.
      *
-     * A gallery that is off shows it and nothing else: it changes only
-     * when the owner says so, so the picture is shown once and the
-     * gallery then waits for the next one to be set.
-     *
-     * A gallery that is on shows it at the start of the window, and then
-     * carries on with its rules. This is how the owner says "show this
-     * one now", without turning the gallery off. */
-    const manual = gallery.manualAsset;
-    if (manual && !existingByAt.has(floorToMinute(cursor))) {
-      events.push({ at: cursor, asset: manual });
-    }
-
+     * The picture the owner chose is a pin, and a pin is shown at its own
+     * moment above. A gallery that is off has no rules, so there is
+     * nothing else to put in the window. */
     if (gallery.scheduleEnabled === false) {
-      /* There is nothing more to put in the window, so the loop is over. */
       break;
     }
 

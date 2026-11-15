@@ -630,6 +630,39 @@ export class ScheduleService {
   }
 
   /**
+   * The next moment the frame wakes up.
+   *
+   * A frame wakes for two reasons: a picture is due, or it is time to
+   * check in with the server. It wakes for whichever comes first.
+   *
+   * This is where a picture asked for by hand belongs: the frame shows
+   * it at the next moment it wakes, rather than at the next check-in,
+   * which may be an hour away.
+   */
+  nextWake(deviceId: number, at: number): number {
+    const checkIn = this.nextCheckIn(deviceId, at);
+    const event = this.nextEventAt(deviceId, at);
+    return event === null ? checkIn : Math.min(checkIn, event);
+  }
+
+  /**
+   * The next moment the frame's plan has a picture due.
+   *
+   * This is null when the plan has nothing left to show, which is what a
+   * gallery that is turned off and has nothing asked of it looks like.
+   */
+  private nextEventAt(deviceId: number, at: number): number | null {
+    const current = this.currentPlan(deviceId);
+    if (!current) return null;
+
+    for (const item of current.items) {
+      if (item.at > at) return item.at;
+    }
+
+    return null;
+  }
+
+  /**
    * The next moment a rule covers, or null if none ever does.
    *
    * The search looks a week ahead, which is enough because a rule names
@@ -700,31 +733,23 @@ export class ScheduleService {
    * The galleries assigned to a device, with their policy.
    */
   private galleriesFor(deviceId: number): GalleryPolicy[] {
-    const rotation = this.rotationFor(deviceId);
-
     const rows = this.db
       .prepare(
-        `SELECT g.id, g.schedule_enabled,
-                COALESCE(mp.content_hash, pa.content_hash) AS manual_asset
+        `SELECT g.id, g.schedule_enabled
          FROM galleries g
          JOIN devices d ON d.gallery_id = g.id
-         LEFT JOIN gallery_manual_pictures mp ON mp.gallery_id = g.id
-         LEFT JOIN photos p ON p.id = mp.photo_id
-         LEFT JOIN photo_assets pa ON pa.photo_id = mp.photo_id AND pa.rotation = ?
          WHERE d.id = ? AND g.enabled = 1
          ORDER BY g.id`,
       )
-      .all(rotation, deviceId) as Array<{
+      .all(deviceId) as Array<{
       id: number;
       schedule_enabled: number;
-      manual_asset: string | null;
     }>;
 
     return rows.map((r) => ({
       galleryId: r.id,
       rules: this.galleryRulesFor(r.id),
       scheduleEnabled: r.schedule_enabled === 1,
-      manualAsset: r.manual_asset,
     }));
   }
 

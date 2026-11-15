@@ -88,19 +88,50 @@ export function shortestRun(days: number): number {
 /**
  * The longest a frequency may be, in seconds.
  *
- * @param days A bit mask of the days of the week.
+ * @param days        A bit mask of the days of the week.
+ * @param startMinute Minutes from local midnight.
+ * @param endMinute   Minutes from local midnight.
  */
-export function frequencyLimit(days: number): number | null {
+export function frequencyLimit(
+  days: number,
+  startMinute = 0,
+  endMinute = 1440,
+): number | null {
+  /* A rule that applies at every moment has no limit: the picture can
+   * change whenever the owner likes. */
+  if (coversEveryMoment(days, startMinute, endMinute)) return null;
+
   const run = shortestRun(days);
   if (run === 0) return null;
   return run * SECONDS_IN.days;
 }
 
 /**
+ * Whether a rule applies at every moment of the week.
+ *
+ * It has to name every day and cover the whole day.
+ */
+export function coversEveryMoment(
+  days: number,
+  startMinute: number,
+  endMinute: number,
+): boolean {
+  const everyDay = DAY_BITS.every((bit) => (days & bit) !== 0);
+  const wholeDay = startMinute === 0 && endMinute === 1440;
+  return everyDay && wholeDay;
+}
+
+/**
  * Whether a frequency is within the limit the days place on it.
  */
-export function frequencyWithinLimit(count: number, unit: FrequencyUnit, days: number): boolean {
-  const limit = frequencyLimit(days);
+export function frequencyWithinLimit(
+  count: number,
+  unit: FrequencyUnit,
+  days: number,
+  startMinute = 0,
+  endMinute = 1440,
+): boolean {
+  const limit = frequencyLimit(days, startMinute, endMinute);
   if (limit === null) return true;
   return frequencyInSeconds(count, unit) <= limit;
 }

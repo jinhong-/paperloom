@@ -106,14 +106,29 @@
  * roughly 300 kB; 2 MB leaves generous headroom. */
 #define SYNC_MAX_ASSET_BYTES (2 * 1024 * 1024)
 
-/* The local asset cache is deliberately small.
+/* The local asset cache.
  *
- * A frame cannot hold every image in a long schedule. It keeps the images
- * closest to the next display and discards older ones as newer images
- * arrive. The count limit is the primary bound; the byte limit stops a
- * handful of unusually large images from consuming the whole cache. */
-#define CACHE_MAX_ASSETS 3
-#define CACHE_MAX_BYTES (3 * 1024 * 1024)
+ * A frame cannot hold every image in a long schedule, so it keeps the
+ * images closest to the next display and discards older ones as newer
+ * images arrive.
+ *
+ * The count is the primary bound. It was three, which was too few: a
+ * gallery that changes every few minutes cycles through its pictures
+ * faster than three, so the frame discarded a picture and then downloaded
+ * it again a few minutes later, which is radio time and therefore power
+ * for nothing.
+ *
+ * The count is now large enough to cover a gallery that changes every
+ * few minutes for an hour, which is the period a frame is awake for at
+ * any one time.
+ *
+ * The byte limit stops a handful of unusually large images from
+ * consuming the whole cache. A picture is up to two megabytes, so the
+ * limit is set for a handful of the largest rather than for the average
+ * one. The flash partition holds four megabytes in all, and the firmware
+ * and the schedule take about one of them, so there is room for this. */
+#define CACHE_MAX_ASSETS 16
+#define CACHE_MAX_BYTES (4 * 1024 * 1024)
 
 /* The largest sleep the device will take.
  *
