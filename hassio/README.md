@@ -19,6 +19,13 @@ GitHub Actions prepares the `hassio-release` branch with a self-contained copy
 of the server. Home Assistant builds the app image on the installation
 machine, so no container registry account or token is required.
 
+## Version
+
+The add-on's version is the server's version. It is written into the
+generated add-on when the release branch is prepared, so the two cannot
+fall out of step: Home Assistant offers an update whenever the server
+inside the add-on has moved on.
+
 ## Device access
 
 The e-paper frame cannot use the Home Assistant ingress URL because ingress

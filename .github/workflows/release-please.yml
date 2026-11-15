@@ -20,6 +20,13 @@ jobs:
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-          # Restrict the release to the web application. Commits outside
-          # server/web must not create a release.
-          path: server/web
+          # The whole repository is released, not only the web application.
+          #
+          # The root package carries the repository's own release: the
+          # changelog that says what changed, and the tag that goes with
+          # it. The web application is released separately because its
+          # version is what the add-on and the page report.
+          #
+          # The two move together, so the add-on's version is always the
+          # version of the server inside it.
+          path: .

@@ -49,6 +49,13 @@ jobs:
             echo "Could not read the add-on version" >&2
             exit 1
           fi
+          # The add-on's version has to be the server's version, or Home
+          # Assistant will not offer an update when the server changes.
+          server_version="$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$RUNNER_TEMP/hassio-release/paperloom/server/web/package.json" | head -n 1)"
+          if [ "$version" != "$server_version" ]; then
+            echo "The add-on is version $version but the server is $server_version" >&2
+            exit 1
+          fi
           echo "Preparing Paperloom $version"
 
       - name: Build and verify image

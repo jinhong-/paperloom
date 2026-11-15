@@ -7,9 +7,19 @@
     { "type": "revert", "section": "Reverts" },
     { "type": "web", "section": "Web" },
     { "type": "server", "section": "Server" },
-    { "type": "firmware", "section": "Firmware" }
+    { "type": "firmware", "section": "Firmware" },
+    { "type": "hassio", "section": "Home Assistant" },
+    { "type": "build", "section": "Build" },
+    { "type": "docs", "section": "Documentation" },
+    { "type": "ci", "section": "Continuous Integration" },
+    { "type": "chore", "section": "Chores" }
   ],
   "packages": {
+    ".": {
+      "release-type": "simple",
+      "package-name": "paperloom",
+      "changelog-path": "CHANGELOG.md"
+    },
     "server/web": {
       "release-type": "node",
       "package-name": "paperloom-web",

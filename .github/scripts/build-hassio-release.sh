@@ -50,6 +50,27 @@ cp hassio/rootfs/run.sh "$APP_DIR/rootfs/run.sh"
 # Copy only tracked server files. This excludes node_modules and build output.
 git --git-dir="$GIT_COMMON_DIR" archive --format=tar HEAD server | tar -x -C "$APP_DIR"
 
+# The add-on's version is the server's version.
+#
+# Home Assistant uses this number to decide whether to offer an update, so
+# it has to move when the server moves. Writing it here rather than in
+# hassio/config.yaml means the two cannot fall out of step: the number in
+# the file is always the number of the server inside it.
+VERSION="$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$APP_DIR/server/web/package.json" | head -n 1)"
+if [ -z "$VERSION" ]; then
+  echo "error: could not read the version from server/web/package.json" >&2
+  exit 1
+fi
+
+sed -i.bak -E "s/^version:[[:space:]]*.*/version: $VERSION/" "$APP_DIR/config.yaml"
+rm -f "$APP_DIR/config.yaml.bak"
+if ! grep -qE "^version:[[:space:]]*$VERSION[[:space:]]*$" "$APP_DIR/config.yaml"; then
+  echo "error: the add-on version was not written" >&2
+  exit 1
+fi
+
+echo "Paperloom $VERSION"
+
 # Git's object store normally contains LF text. Normalize it anyway so a
 # CRLF checkout can never produce a broken shell entrypoint.
 find "$APP_DIR" -type f -print0 | xargs -0 -r sed -i 's/\r$//'
