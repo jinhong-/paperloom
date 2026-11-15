@@ -12,7 +12,14 @@
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 
-#define APP_VERSION "0.1.0"
+/* The version the firmware reports.
+ *
+ * It comes from version.txt, which the build reads, so that the
+ * firmware and the release cannot say different things about which
+ * version they are. */
+#ifndef APP_VERSION
+#error "APP_VERSION must be set by the build, from version.txt"
+#endif
 
 /* ------------------------------------------------------------------ */
 /* Panel                                                               */

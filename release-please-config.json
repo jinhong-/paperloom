@@ -22,6 +22,17 @@
     }
   ],
   "packages": {
+    "server": {
+      "release-type": "node",
+      "package-name": "paperloom-server",
+      "changelog-path": "CHANGELOG.md"
+    },
+    "firmware": {
+      "release-type": "simple",
+      "package-name": "paperloom-firmware",
+      "changelog-path": "CHANGELOG.md",
+      "version-file": "version.txt"
+    },
     "server/web": {
       "release-type": "node",
       "package-name": "paperloom-web",
