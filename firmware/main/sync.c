@@ -1118,6 +1118,17 @@ static char *build_sync_body(size_t *out_len) {
         cJSON_AddStringToObject(root, "displayed_asset", displayed);
     }
 
+    /* When the picture was shown.
+     *
+     * The frame will not show a picture it has already shown, and the
+     * server has to know that as well: a picture asked for has to be put
+     * at a moment after this one, or the frame would skip it as one it
+     * has already been shown, and the picture would never appear. */
+    int64_t shown_at = schedule_last_shown_at();
+    if (shown_at > 0) {
+        cJSON_AddNumberToObject(root, "displayed_at_ms", (double)shown_at);
+    }
+
     /* Tell the server what we already hold so it only sends what is
      * missing. The cache is bounded, so report only the assets that the
      * schedule currently wants rather than every historical file. */

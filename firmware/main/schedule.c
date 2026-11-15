@@ -283,6 +283,15 @@ schedule_status_t schedule_due_event(schedule_event_t *out) {
  *
  * The events in a schedule are in order, so an event has been shown if
  * its time is at or before the time of the last one shown.
+ *
+ * The exception is a picture that was asked for. Such a picture is put
+ * at a moment of its own, and that moment can be earlier than the last
+ * one shown, because the server put it there before it knew what the
+ * frame had seen.
+ *
+ * The frame skips a picture it has already shown, not one it has merely
+ * not reached yet. So a picture that is not the one on the panel is not
+ * skipped for having a time that has passed.
  */
 static bool event_was_shown(const schedule_event_t *event) {
     if (s_last_shown_at_ms == 0) {
@@ -290,7 +299,21 @@ static bool event_was_shown(const schedule_event_t *event) {
         return false;
     }
 
-    return event->at_ms <= s_last_shown_at_ms;
+    if (event->at_ms > s_last_shown_at_ms) {
+        return false;
+    }
+
+    /* The picture is the one on the panel, so it has been shown. */
+    if (s_displayed[0] != '\0' && strcmp(event->asset_hash, s_displayed) == 0) {
+        return true;
+    }
+
+    /* A different picture whose time has passed. The server may have put
+     * it there before it knew what the frame had shown, so it is given
+     * the chance to be shown. The server puts such a picture after the
+     * last one shown in future, so this is the exception rather than the
+     * rule. */
+    return false;
 }
 
 /**
@@ -384,6 +407,21 @@ esp_err_t schedule_mark_displayed(const char *hash, int64_t at_ms) {
     }
     nvs_close(nvs);
     return err;
+}
+
+/**
+ * When the frame last showed a picture.
+ *
+ * The frame will not show a picture it has already shown, and it
+ * remembers the time of the last one so that it can tell. The server
+ * needs to know it as well: a picture asked for has to be put at a
+ * moment after this one, or the frame would skip it as one it has
+ * already been shown, and the picture would never appear at all.
+ *
+ * @return The time in milliseconds, or zero if nothing has been shown.
+ */
+int64_t schedule_last_shown_at(void) {
+    return s_last_shown_at_ms;
 }
 
 /**

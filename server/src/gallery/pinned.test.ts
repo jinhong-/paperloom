@@ -187,6 +187,42 @@ async function signed(
   return { status: response.statusCode, body: parsed, raw };
 }
 
+test("a picture asked for is put after what the frame has already shown", async () => {
+  const world = await makeWorld();
+
+  world.db
+    .prepare(
+      `INSERT INTO device_sync_rules (device_id, days, start_minute, end_minute, sync_interval, priority)
+       VALUES (?, 127, 0, 1440, 900, 0)`,
+    )
+    .run(world.deviceId);
+
+  /* The frame has shown a picture, and it will not show anything at or
+   * before that moment again. A picture asked for has to go after it,
+   * or the frame would skip it and it would never appear. */
+  const shownAt = Date.now() - 60_000;
+  world.db
+    .prepare("UPDATE devices SET displayed_at = ? WHERE id = ?")
+    .run(shownAt, world.deviceId);
+
+  const added = await world.photos.addPhoto(
+    world.galleryId,
+    "asked-for.png",
+    await image(220, 30, 30),
+  );
+
+  const pin = world.pins.pinForOwner(
+    world.deviceId,
+    added.id,
+    Date.now(),
+  );
+
+  assert.ok(
+    pin.at > shownAt,
+    "the picture must be put after the one the frame has already shown",
+  );
+});
+
 test("a picture from Telegram is pinned to the frame's next check-in", async () => {
   const world = await makeWorld();
 

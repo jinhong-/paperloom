@@ -75,6 +75,19 @@ esp_err_t schedule_mark_displayed(const char *hash, int64_t at_ms);
 const char *schedule_displayed_asset(void);
 
 /**
+ * When the frame last showed a picture.
+ *
+ * The frame will not show a picture it has already shown, and it
+ * remembers the time of the last one so that it can tell. The server
+ * needs to know it as well: a picture asked for has to be put at a
+ * moment after this one, or the frame would skip it as one it has
+ * already been shown.
+ *
+ * @return The time in milliseconds, or zero if nothing has been shown.
+ */
+int64_t schedule_last_shown_at(void);
+
+/**
  * The revision of the schedule the device holds.
  */
 const char *schedule_revision(void);

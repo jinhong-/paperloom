@@ -103,6 +103,16 @@ export interface SyncRequest {
   /** The asset the device last successfully applied to the panel. */
   readonly displayed_asset?: string;
   /**
+   * When the device last showed a picture, in milliseconds since the
+   * epoch.
+   *
+   * The device remembers this, because it will not show a picture it has
+   * already shown. The server needs it as well: a picture asked for has
+   * to be put at a moment after this one, or the device would skip it as
+   * one it has already been shown.
+   */
+  readonly displayed_at_ms?: number;
+  /**
    * Content hashes of the assets the device already holds locally.
    *
    * The server uses this to build the download manifest: an asset listed
@@ -287,7 +297,8 @@ export function registerDeviceApi(app: FastifyInstance, options: DeviceApiOption
            firmware_version = COALESCE(?, firmware_version), last_seen_at = ?,
            clock_ms = COALESCE(?, clock_ms),
            clock_anchored = COALESCE(?, clock_anchored),
-           on_battery = COALESCE(?, on_battery)
+           on_battery = COALESCE(?, on_battery),
+           displayed_at = COALESCE(?, displayed_at)
        WHERE id = ?`,
     ).run(
       body.displayed_asset ?? null,
@@ -297,6 +308,7 @@ export function registerDeviceApi(app: FastifyInstance, options: DeviceApiOption
       body.clock_ms ?? null,
       body.clock_anchored ?? null,
       body.on_battery ?? null,
+      body.displayed_at_ms ?? null,
       auth.id,
     );
 

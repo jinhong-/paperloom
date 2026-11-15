@@ -650,16 +650,36 @@ export class ScheduleService {
    *
    * This is null when the plan has nothing left to show, which is what a
    * gallery that is turned off and has nothing asked of it looks like.
+   *
+   * Pictures the frame has already shown are skipped. The frame will not
+   * show a picture it has already shown, so putting a picture at such a
+   * moment would mean it was never shown at all.
    */
   private nextEventAt(deviceId: number, at: number): number | null {
     const current = this.currentPlan(deviceId);
     if (!current) return null;
 
+    /* The frame remembers the last picture it showed, and will not show
+     * anything at or before that moment again. */
+    const shownAt = this.displayedAt(deviceId);
+
     for (const item of current.items) {
-      if (item.at > at) return item.at;
+      if (item.at <= at) continue;
+      if (shownAt !== null && item.at <= shownAt) continue;
+      return item.at;
     }
 
     return null;
+  }
+
+  /**
+   * When the frame last showed a picture, if it has said.
+   */
+  displayedAt(deviceId: number): number | null {
+    const row = this.db
+      .prepare("SELECT displayed_at FROM devices WHERE id = ?")
+      .get(deviceId) as { displayed_at: number | null } | undefined;
+    return row?.displayed_at ?? null;
   }
 
   /**
