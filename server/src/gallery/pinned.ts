@@ -49,10 +49,9 @@ export class PinnedPhotoService {
   framesFor(galleryId: number): Frame[] {
     const rows = this.options.db
       .prepare(
-        `SELECT d.id, d.name FROM devices d
-         JOIN device_galleries dg ON dg.device_id = d.id
-         WHERE dg.gallery_id = ?
-         ORDER BY d.id`,
+        `SELECT id, name FROM devices
+         WHERE gallery_id = ?
+         ORDER BY id`,
       )
       .all(galleryId) as Array<{ id: number; name: string }>;
     return rows;

@@ -48,8 +48,6 @@ const timezone = ref("UTC");
  * prepared for it turned too. */
 const rotation = ref(0);
 
-const deviceGalleries = ref<Set<number>>(new Set());
-
 /* Check-in rules. */
 const rules = ref<SyncRule[]>([]);
 /* The rule being written. */
@@ -75,9 +73,8 @@ async function showSchedule(device: Device): Promise<void> {
   error.value = null;
   notice.value = null;
 
-  /* The galleries and the policy come with the frame, so that what is
+  /* The gallery and the policy come with the frame, so that what is
    * shown is what the frame is actually doing rather than a guess. */
-  deviceGalleries.value = new Set(device.galleries ?? []);
   if (device.policy) {
     syncInterval.value = device.policy.sync_interval;
     lookahead.value = device.policy.lookahead;
@@ -127,21 +124,26 @@ function useBrowserZone(): void {
 }
 
 /**
- * Assign a gallery to the device.
+ * Choose the gallery the frame shows.
+ *
+ * A frame shows one gallery, so choosing another one replaces the one it
+ * had. Choosing none leaves it showing nothing.
  */
-async function toggleGallery(galleryId: number, assigned: boolean): Promise<void> {
+async function chooseGallery(galleryId: number | null): Promise<void> {
   if (!selected.value) return;
   error.value = null;
-  busy.value = assigned ? "Adding the gallery..." : "Removing the gallery...";
+  busy.value = galleryId === null ? "Removing the gallery..." : "Setting the gallery...";
   try {
-    if (assigned) {
-      await api.assignGallery(selected.value.id, galleryId);
-      deviceGalleries.value.add(galleryId);
-      busy.value = "The gallery was added. The frame picks it up at its next check-in.";
+    if (galleryId === null) {
+      const current = selected.value.gallery_id;
+      if (current === null) return;
+      await api.unassignGallery(selected.value.id, current);
+      selected.value.gallery_id = null;
+      busy.value = "The frame shows nothing now. It picks this up at its next check-in.";
     } else {
-      await api.unassignGallery(selected.value.id, galleryId);
-      deviceGalleries.value.delete(galleryId);
-      busy.value = "The gallery was removed. The frame picks it up at its next check-in.";
+      await api.assignGallery(selected.value.id, galleryId);
+      selected.value.gallery_id = galleryId;
+      busy.value = "The gallery was set. The frame picks it up at its next check-in.";
     }
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
@@ -521,17 +523,40 @@ onMounted(async () => {
       </div>
 
       <div class="card">
-        <h2>Galleries</h2>
-        <div v-if="session.galleries.length === 0" class="empty">No galleries yet.</div>
-        <div v-for="item in session.galleries" :key="item.id" class="row between">
-          <span>{{ item.name }}</span>
-          <button
-            class="secondary"
-            @click="toggleGallery(item.id, !deviceGalleries.has(item.id))"
-          >
-            {{ deviceGalleries.has(item.id) ? "Assigned" : "Assign" }}
-          </button>
+        <h2>Gallery</h2>
+        <p class="small muted">
+          A frame shows one gallery. The pictures in it, and the schedule
+          that says when they change, are the gallery's.
+        </p>
+
+        <div v-if="session.galleries.length === 0" class="empty">
+          No galleries yet. Make one first.
         </div>
+
+        <template v-else>
+          <div class="field">
+            <label for="device-gallery">The gallery this frame shows</label>
+            <select
+              id="device-gallery"
+              :value="selected?.gallery_id ?? ''"
+              @change="chooseGallery(Number(($event.target as HTMLSelectElement).value))"
+            >
+              <option value="">None</option>
+              <option v-for="item in session.galleries" :key="item.id" :value="item.id">
+                {{ item.name }}
+              </option>
+            </select>
+          </div>
+
+          <button
+            v-if="selected?.gallery_id"
+            class="secondary"
+            :disabled="busy !== null"
+            @click="chooseGallery(null)"
+          >
+            Show nothing
+          </button>
+        </template>
       </div>
 
       <div class="card">

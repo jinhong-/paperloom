@@ -704,8 +704,8 @@ export class ScheduleService {
       .prepare(
         `SELECT g.id, g.rotation_mode, g.min_interval, g.max_interval
          FROM galleries g
-         JOIN device_galleries dg ON dg.gallery_id = g.id
-         WHERE dg.device_id = ? AND g.enabled = 1
+         JOIN devices d ON d.gallery_id = g.id
+         WHERE d.id = ? AND g.enabled = 1
          ORDER BY g.id`,
       )
       .all(deviceId) as Array<{
@@ -772,9 +772,9 @@ export class ScheduleService {
                 p.weight, p.gallery_id
          FROM photos p
          JOIN galleries g ON g.id = p.gallery_id
-         JOIN device_galleries dg ON dg.gallery_id = p.gallery_id
+         JOIN devices d ON d.gallery_id = p.gallery_id
          LEFT JOIN photo_assets pa ON pa.photo_id = p.id AND pa.rotation = ?
-         WHERE dg.device_id = ?
+         WHERE d.id = ?
            AND g.enabled = 1
            AND COALESCE(pa.content_hash, p.content_hash) IS NOT NULL
          ORDER BY p.id`,

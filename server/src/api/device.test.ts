@@ -178,10 +178,7 @@ test("the device protocol works end to end", async (t) => {
   const deviceRowId = (
     db.prepare("SELECT id FROM devices WHERE device_id = ?").get(deviceId) as { id: number }
   ).id;
-  db.prepare("INSERT INTO device_galleries (device_id, gallery_id) VALUES (?, ?)").run(
-    deviceRowId,
-    galleryId,
-  );
+  db.prepare("UPDATE devices SET gallery_id = ? WHERE id = ?").run(galleryId, deviceRowId);
   db.prepare(
     `INSERT INTO device_policies (device_id, sync_interval, lookahead) VALUES (?, 3600, 10800)`,
   ).run(deviceRowId);
@@ -321,10 +318,7 @@ test("the schedule is identical across retries", async (t) => {
   const deviceRowId = (
     db.prepare("SELECT id FROM devices WHERE device_id = ?").get(deviceId) as { id: number }
   ).id;
-  db.prepare("INSERT INTO device_galleries (device_id, gallery_id) VALUES (?, ?)").run(
-    deviceRowId,
-    galleryId,
-  );
+  db.prepare("UPDATE devices SET gallery_id = ? WHERE id = ?").run(galleryId, deviceRowId);
   db.prepare(
     `INSERT INTO device_policies (device_id, sync_interval, lookahead) VALUES (?, 3600, 10800)`,
   ).run(deviceRowId);
@@ -382,10 +376,7 @@ test("the frame is given the whole plan the revision names", async (t) => {
   const deviceRowId = (
     db.prepare("SELECT id FROM devices WHERE device_id = ?").get(deviceId) as { id: number }
   ).id;
-  db.prepare("INSERT INTO device_galleries (device_id, gallery_id) VALUES (?, ?)").run(
-    deviceRowId,
-    galleryId,
-  );
+  db.prepare("UPDATE devices SET gallery_id = ? WHERE id = ?").run(galleryId, deviceRowId);
   db.prepare(
     `INSERT INTO device_policies (device_id, sync_interval, lookahead) VALUES (?, 3600, 10800)`,
   ).run(deviceRowId);
@@ -731,10 +722,7 @@ test("a frame that retries gets the same schedule", async (t) => {
   const deviceRowId = (
     db.prepare("SELECT id FROM devices WHERE device_id = ?").get(deviceId) as { id: number }
   ).id;
-  db.prepare("INSERT INTO device_galleries (device_id, gallery_id) VALUES (?, ?)").run(
-    deviceRowId,
-    galleryId,
-  );
+  db.prepare("UPDATE devices SET gallery_id = ? WHERE id = ?").run(galleryId, deviceRowId);
   db.prepare(
     `INSERT INTO device_policies (device_id, sync_interval, lookahead) VALUES (?, 3600, 10800)`,
   ).run(deviceRowId);
@@ -775,10 +763,7 @@ test("the plan grows rather than being replaced", async (t) => {
   const deviceRowId = (
     db.prepare("SELECT id FROM devices WHERE device_id = ?").get(deviceId) as { id: number }
   ).id;
-  db.prepare("INSERT INTO device_galleries (device_id, gallery_id) VALUES (?, ?)").run(
-    deviceRowId,
-    galleryId,
-  );
+  db.prepare("UPDATE devices SET gallery_id = ? WHERE id = ?").run(galleryId, deviceRowId);
   /* A short interval, so that the plan holds events close together and
    * the extension is visible. */
   db.prepare("UPDATE galleries SET min_interval = 60, max_interval = 60 WHERE id = ?").run(
@@ -862,10 +847,7 @@ test("the plan starts now, so a frame gets a picture at once", async (t) => {
   const deviceRowId = (
     db.prepare("SELECT id FROM devices WHERE device_id = ?").get(deviceId) as { id: number }
   ).id;
-  db.prepare("INSERT INTO device_galleries (device_id, gallery_id) VALUES (?, ?)").run(
-    deviceRowId,
-    galleryId,
-  );
+  db.prepare("UPDATE devices SET gallery_id = ? WHERE id = ?").run(galleryId, deviceRowId);
   db.prepare(
     `INSERT INTO device_policies (device_id, sync_interval, lookahead) VALUES (?, 3600, 10800)`,
   ).run(deviceRowId);
@@ -913,10 +895,7 @@ test("the schedule reaches through the frame's longest sleep", async (t) => {
   const deviceRowId = (
     db.prepare("SELECT id FROM devices WHERE device_id = ?").get(deviceId) as { id: number }
   ).id;
-  db.prepare("INSERT INTO device_galleries (device_id, gallery_id) VALUES (?, ?)").run(
-    deviceRowId,
-    galleryId,
-  );
+  db.prepare("UPDATE devices SET gallery_id = ? WHERE id = ?").run(galleryId, deviceRowId);
   db.prepare(
     `INSERT INTO device_policies (device_id, sync_interval, lookahead) VALUES (?, 3600, 10800)`,
   ).run(deviceRowId);
@@ -978,10 +957,7 @@ test("a changed gallery is handed over at the frame's next check-in", async (t) 
   const deviceRowId = (
     db.prepare("SELECT id FROM devices WHERE device_id = ?").get(deviceId) as { id: number }
   ).id;
-  db.prepare("INSERT INTO device_galleries (device_id, gallery_id) VALUES (?, ?)").run(
-    deviceRowId,
-    galleryId,
-  );
+  db.prepare("UPDATE devices SET gallery_id = ? WHERE id = ?").run(galleryId, deviceRowId);
   db.prepare(
     `INSERT INTO device_policies (device_id, sync_interval, lookahead) VALUES (?, 3600, 10800)`,
   ).run(deviceRowId);

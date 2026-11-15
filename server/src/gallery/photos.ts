@@ -333,10 +333,10 @@ export class GalleryPhotoService {
   invalidateGallery(galleryId: number, now: number): void {
     const { db, schedules } = this.options;
     const devices = db
-      .prepare("SELECT device_id FROM device_galleries WHERE gallery_id = ?")
-      .all(galleryId) as Array<{ device_id: number }>;
+      .prepare("SELECT id FROM devices WHERE gallery_id = ?")
+      .all(galleryId) as Array<{ id: number }>;
     for (const device of devices) {
-      schedules.invalidate(device.device_id, now);
+      schedules.invalidate(device.id, now);
     }
   }
 }

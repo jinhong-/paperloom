@@ -626,4 +626,70 @@ CREATE TABLE gallery_schedule_rules (
 CREATE INDEX idx_gallery_schedule_rules_gallery ON gallery_schedule_rules(gallery_id);
 `,
   },
+  {
+    id: "0016_one_gallery_per_device",
+    sql: `
+-- A frame shows one gallery.
+--
+-- A frame used to have as many galleries as it liked, and rotated through
+-- them. A frame shows one thing, and the gallery is that thing, so the
+-- gallery is a property of the frame rather than a list beside it.
+--
+-- The frames that had more than one gallery keep the first they were
+-- given, which is the one they were showing when the change was made.
+ALTER TABLE devices ADD COLUMN gallery_id INTEGER REFERENCES galleries(id) ON DELETE SET NULL;
+
+-- The frames that had more than one gallery keep the first they were
+-- given, which is the one they were showing when the change was made.
+UPDATE devices
+   SET gallery_id = (
+     SELECT MIN(dg.gallery_id) FROM device_galleries dg WHERE dg.device_id = devices.id
+   )
+ WHERE gallery_id IS NULL;
+
+DROP TABLE device_galleries;
+CREATE INDEX idx_devices_gallery ON devices(gallery_id);
+
+-- How often a rule changes the picture, in a unit the owner chose.
+--
+-- The interval is kept in seconds, and the unit is kept beside it so
+-- that the page can say "every 5 days" rather than "every 432000
+-- seconds". The unit is only for showing: the schedule itself is worked
+-- out in seconds.
+ALTER TABLE gallery_schedule_rules ADD COLUMN interval_unit TEXT NOT NULL DEFAULT 'minutes';
+ALTER TABLE gallery_schedule_rules ADD COLUMN min_unit TEXT;
+ALTER TABLE gallery_schedule_rules ADD COLUMN max_unit TEXT;
+`,
+  },
+  {
+    id: "0017_gallery_telegram_mode",
+    sql: `
+-- How pictures from a chat arrive at a gallery.
+--
+-- In the queue mode each picture is shown after the one before it, so
+-- that the pictures arrive in the order they were sent. In the latest
+-- mode a new picture replaces the one that is waiting, because a gallery
+-- that changes once a day has no use for a queue of pictures: only the
+-- last one sent is of any interest.
+--
+-- The mode belongs to the gallery, because it is about the pictures.
+ALTER TABLE galleries ADD COLUMN telegram_mode TEXT NOT NULL DEFAULT 'queue';
+
+-- The picture a frame shows when its gallery has no schedule.
+--
+-- A gallery with no rules changes on its own schedule: nothing is
+-- scheduled, and the picture shown is the one the owner has set. The
+-- frame is told about it, and the picture is kept on the server for as
+-- long as the frame might want it.
+CREATE TABLE gallery_manual_pictures (
+  gallery_id    INTEGER PRIMARY KEY REFERENCES galleries(id) ON DELETE CASCADE,
+  -- The photo the picture is made from.
+  photo_id      INTEGER NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+  -- The asset that is sent to the frame.
+  content_hash  TEXT NOT NULL,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`,
+  },
 ];

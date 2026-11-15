@@ -127,8 +127,8 @@ export interface Device {
   displayed_asset: string | null;
   last_seen_at: string | null;
   created_at: string;
-  /** The galleries this frame shows. */
-  galleries: number[];
+  /** The gallery this frame shows, if it has one. */
+  gallery_id: number | null;
   /** The policy that decides how it checks in. */
   policy: DevicePolicy | null;
 }

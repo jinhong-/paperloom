@@ -874,20 +874,16 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       .prepare(
         `SELECT id, name, device_id, state, panel_width, panel_height, timezone,
                 rotation, battery_mv, firmware_version, displayed_asset,
-                last_seen_at, created_at
+                last_seen_at, created_at, gallery_id
          FROM devices WHERE user_id = ? ORDER BY name`,
       )
       .all(userId) as Array<Record<string, unknown> & { id: number }>;
 
-    /* The galleries a frame shows, and the policy that decides how it
+    /* The gallery a frame shows, and the policy that decides how it
      * checks in, come with it.
      *
      * Without them the management page has to guess, and what it shows is
      * not what the frame is actually doing. */
-    const galleryRows = db
-      .prepare("SELECT device_id, gallery_id FROM device_galleries")
-      .all() as Array<{ device_id: number; gallery_id: number }>;
-
     const policyRows = db
       .prepare(
         `SELECT device_id, sync_interval, lookahead, quiet_start, quiet_end
@@ -901,13 +897,6 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       quiet_end: number | null;
     }>;
 
-    const galleriesByDevice = new Map<number, number[]>();
-    for (const row of galleryRows) {
-      const list = galleriesByDevice.get(row.device_id) ?? [];
-      list.push(row.gallery_id);
-      galleriesByDevice.set(row.device_id, list);
-    }
-
     const policyByDevice = new Map(policyRows.map((row) => [row.device_id, row]));
 
     await reply.send(
@@ -915,7 +904,6 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
         const policy = policyByDevice.get(device.id);
         return {
           ...device,
-          galleries: galleriesByDevice.get(device.id) ?? [],
           policy: policy
             ? {
                 sync_interval: policy.sync_interval,
@@ -937,8 +925,8 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
     const body = request.body as { gallery_id?: number };
 
     const device = db
-      .prepare("SELECT id FROM devices WHERE id = ? AND user_id = ?")
-      .get(Number(id), userId);
+      .prepare("SELECT id, gallery_id FROM devices WHERE id = ? AND user_id = ?")
+      .get(Number(id), userId) as { id: number; gallery_id: number | null } | undefined;
     if (!device) {
       await reply.code(404).send({ error: "unknown device" });
       return;
@@ -948,13 +936,22 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       return;
     }
 
-    db.prepare(
-      `INSERT INTO device_galleries (device_id, gallery_id) VALUES (?, ?)
-       ON CONFLICT DO NOTHING`,
-    ).run(Number(id), body.gallery_id);
+    /* The gallery has to be the owner's. */
+    const gallery = db
+      .prepare("SELECT id FROM galleries WHERE id = ? AND user_id = ?")
+      .get(body.gallery_id, userId);
+    if (!gallery) {
+      await reply.code(404).send({ error: "unknown gallery" });
+      return;
+    }
 
-    /* The device's schedule changes with its galleries, so the windows
-     * that were materialised from the old set are no longer right. */
+    /* A frame shows one gallery. Assigning a different one replaces the
+     * one it had, rather than being refused, so that changing a frame's
+     * gallery is a single step. */
+    db.prepare("UPDATE devices SET gallery_id = ? WHERE id = ?").run(body.gallery_id, Number(id));
+
+    /* The device's schedule changes with its gallery, so the windows
+     * that were materialised from the old one are no longer right. */
     schedules.invalidate(Number(id), Date.now());
 
     await reply.send({ status: "ok" });
@@ -973,7 +970,9 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       return;
     }
 
-    db.prepare("DELETE FROM device_galleries WHERE device_id = ? AND gallery_id = ?").run(
+    /* The frame is only left without a gallery if the gallery being
+     * removed is the one it has. */
+    db.prepare("UPDATE devices SET gallery_id = NULL WHERE id = ? AND gallery_id = ?").run(
       Number(id),
       Number(galleryId),
     );

@@ -65,10 +65,7 @@ async function makeWorld(): Promise<World> {
       .run(userId).lastInsertRowid,
   );
 
-  db.prepare("INSERT INTO device_galleries (device_id, gallery_id) VALUES (?, ?)").run(
-    deviceId,
-    galleryId,
-  );
+  db.prepare("UPDATE devices SET gallery_id = ? WHERE id = ?").run(galleryId, deviceId);
   db.prepare("INSERT INTO device_policies (device_id) VALUES (?)").run(deviceId);
 
   return { db, assets, schedules, pins, photos, galleryId, deviceId };
@@ -313,8 +310,8 @@ test("every frame showing the gallery gets the picture pinned", async () => {
       .run().lastInsertRowid,
   );
   world.db
-    .prepare("INSERT INTO device_galleries (device_id, gallery_id) VALUES (?, ?)")
-    .run(secondDevice, world.galleryId);
+    .prepare("UPDATE devices SET gallery_id = ? WHERE id = ?")
+    .run(world.galleryId, secondDevice);
   world.db.prepare("INSERT INTO device_policies (device_id) VALUES (?)").run(secondDevice);
 
   const added = await world.photos.addPhoto(world.galleryId, "pinned.png", await image(220, 30, 30), {
@@ -566,10 +563,7 @@ test("a picture is slotted into the frame's next check-in", async () => {
     userId,
     deviceRowId,
   );
-  db.prepare("INSERT INTO device_galleries (device_id, gallery_id) VALUES (?, ?)").run(
-    deviceRowId,
-    galleryId,
-  );
+  db.prepare("UPDATE devices SET gallery_id = ? WHERE id = ?").run(galleryId, deviceRowId);
   db.prepare(
     "INSERT INTO device_policies (device_id, sync_interval, lookahead) VALUES (?, 3600, 10800)",
   ).run(deviceRowId);
