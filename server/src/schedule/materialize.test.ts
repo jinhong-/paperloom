@@ -240,8 +240,7 @@ test("a gallery changes again once the still rule no longer covers the moment", 
   assert.ok(events.length > 0, "the gallery changes again once the rule is over");
 });
 
-test("a rule's own interval is used while it covers the moment", () => {
-  const start = Date.UTC(2026, 0, 1, 6, 0, 0);
+test("a rule's own interval is used while it covers the moment", () => {  const start = Date.UTC(2026, 0, 1, 6, 0, 0);
   const events = materializeSchedule({
     deviceId: "1",
     windowStart: start,
@@ -273,4 +272,70 @@ test("a rule's own interval is used while it covers the moment", () => {
     const gap = events[i]!.at - events[i - 1]!.at;
     assert.equal(gap, 900 * 1000, "the rule's own interval is used");
   }
+});
+
+test("a gallery that is off shows the picture that was set by hand", () => {
+  const events = materializeSchedule({
+    deviceId: "1",
+    windowStart,
+    candidates,
+    galleries: [
+      {
+        galleryId: 10,
+        rotationMode: "random",
+        minInterval: 3600,
+        maxInterval: 3600,
+        scheduleEnabled: false,
+        manualAsset: "the-picture-the-owner-chose",
+      },
+    ],
+    policy,
+  });
+
+  assert.equal(events.length, 1, "only the picture that was set is shown");
+  assert.equal(events[0]!.asset, "the-picture-the-owner-chose");
+});
+
+test("a gallery that is off and has no picture shows nothing", () => {
+  const events = materializeSchedule({
+    deviceId: "1",
+    windowStart,
+    candidates,
+    galleries: [
+      {
+        galleryId: 10,
+        rotationMode: "random",
+        minInterval: 3600,
+        maxInterval: 3600,
+        scheduleEnabled: false,
+        manualAsset: null,
+      },
+    ],
+    policy,
+  });
+
+  assert.equal(events.length, 0, "there is no picture to show");
+});
+
+test("a gallery that is on changes at its own interval when it has no rules", () => {
+  /* A gallery that has just been made has no rules yet, and that is not
+   * the same as a gallery that has been turned off. */
+  const events = materializeSchedule({
+    deviceId: "1",
+    windowStart,
+    candidates,
+    galleries: [
+      {
+        galleryId: 10,
+        rotationMode: "random",
+        minInterval: 3600,
+        maxInterval: 3600,
+        rules: [],
+        scheduleEnabled: true,
+      },
+    ],
+    policy,
+  });
+
+  assert.ok(events.length > 1, "the gallery changes on its own");
 });

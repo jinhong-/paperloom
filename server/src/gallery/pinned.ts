@@ -73,12 +73,21 @@ export class PinnedPhotoService {
   }
 
   /**
-   * Pin a picture to a frame, after whatever is already pinned.
+   * Pin a picture to a frame.
    *
-   * The pictures are a queue. Each one takes the place after the last in
-   * the queue, and is shown at the check-in after that, so that the
-   * pictures arrive in the order they were sent rather than replacing one
-   * another.
+   * There are two ways the pictures can arrive.
+   *
+   * In the queue mode the pictures are a queue. Each one takes the place
+   * after the last in the queue, and is shown at the check-in after that,
+   * so that the pictures arrive in the order they were sent rather than
+   * replacing one another.
+   *
+   * In the latest mode a picture replaces the one that is waiting. A
+   * gallery that changes once a day has no use for a queue of pictures:
+   * only the last one sent is of any interest, and the ones before it
+   * would only be shown long after they had been sent.
+   *
+   * The mode belongs to the gallery, because it is about the pictures.
    *
    * @return the pins that were made, so that the caller can say how many
    *         frames the picture is going to appear on.
@@ -86,20 +95,45 @@ export class PinnedPhotoService {
   pinForGallery(galleryId: number, photoId: number, now: number): PinnedPhoto[] {
     const { db } = this.options;
     const pins: PinnedPhoto[] = [];
+    const mode = this.modeFor(galleryId);
 
     for (const frame of this.framesFor(galleryId)) {
-      /* The moment this picture is for is the check-in after the last one
-       * already in the queue, so that the pictures come out in order. */
-      const last = db
-        .prepare(
-          `SELECT at FROM pinned_photos
-           WHERE device_id = ? AND shown = 0
-           ORDER BY at DESC LIMIT 1`,
-        )
-        .get(frame.id) as { at: number } | undefined;
+      let at: number;
 
-      const from = last !== undefined ? last.at : now;
-      const at = this.nextSyncAfter(frame.id, from);
+      if (mode === "latest") {
+        /* The picture that is waiting is replaced, and the new one takes
+         * its place. The frame is shown the new picture at the check-in
+         * the old one was waiting for, so that the picture changes as
+         * soon as the frame is next in touch. */
+        const waiting = db
+          .prepare(
+            `SELECT at FROM pinned_photos
+             WHERE device_id = ? AND shown = 0
+             ORDER BY at ASC LIMIT 1`,
+          )
+          .get(frame.id) as { at: number } | undefined;
+
+        if (waiting !== undefined) {
+          db.prepare("DELETE FROM pinned_photos WHERE device_id = ? AND shown = 0").run(frame.id);
+          at = waiting.at;
+        } else {
+          at = this.nextSyncAfter(frame.id, now);
+        }
+      } else {
+        /* The moment this picture is for is the check-in after the last
+         * one already in the queue, so that the pictures come out in
+         * order. */
+        const last = db
+          .prepare(
+            `SELECT at FROM pinned_photos
+             WHERE device_id = ? AND shown = 0
+             ORDER BY at DESC LIMIT 1`,
+          )
+          .get(frame.id) as { at: number } | undefined;
+
+        const from = last !== undefined ? last.at : now;
+        at = this.nextSyncAfter(frame.id, from);
+      }
 
       const result = db
         .prepare(
@@ -117,6 +151,20 @@ export class PinnedPhotoService {
     }
 
     return pins;
+  }
+
+  /**
+   * How the pictures of a gallery arrive.
+   *
+   * The queue is the default, because it is what a gallery that is sent
+   * pictures one after another wants.
+   */
+  private modeFor(galleryId: number): "queue" | "latest" {
+    const row = this.options.db
+      .prepare("SELECT telegram_mode FROM galleries WHERE id = ?")
+      .get(galleryId) as { telegram_mode: string | null } | undefined;
+
+    return row?.telegram_mode === "latest" ? "latest" : "queue";
   }
 
   /**

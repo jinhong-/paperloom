@@ -675,6 +675,18 @@ ALTER TABLE gallery_schedule_rules ADD COLUMN max_unit TEXT;
 -- The mode belongs to the gallery, because it is about the pictures.
 ALTER TABLE galleries ADD COLUMN telegram_mode TEXT NOT NULL DEFAULT 'queue';
 
+-- Whether the gallery changes its picture on its own.
+--
+-- A gallery that is on changes at the pace its rules and its own
+-- interval say. A gallery that is off changes only when the owner sets
+-- the picture by hand, which is what a gallery of one particular picture
+-- wants.
+--
+-- The setting is here rather than being worked out from the rules,
+-- because a gallery that has just been made has no rules yet, and that
+-- is not the same as a gallery that has been turned off.
+ALTER TABLE galleries ADD COLUMN schedule_enabled INTEGER NOT NULL DEFAULT 1;
+
 -- The picture a frame shows when its gallery has no schedule.
 --
 -- A gallery with no rules changes on its own schedule: nothing is

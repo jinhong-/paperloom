@@ -700,19 +700,27 @@ export class ScheduleService {
    * The galleries assigned to a device, with their policy.
    */
   private galleriesFor(deviceId: number): GalleryPolicy[] {
+    const rotation = this.rotationFor(deviceId);
+
     const rows = this.db
       .prepare(
-        `SELECT g.id, g.rotation_mode, g.min_interval, g.max_interval
+        `SELECT g.id, g.rotation_mode, g.min_interval, g.max_interval,
+                g.schedule_enabled, COALESCE(mp.content_hash, pa.content_hash) AS manual_asset
          FROM galleries g
          JOIN devices d ON d.gallery_id = g.id
+         LEFT JOIN gallery_manual_pictures mp ON mp.gallery_id = g.id
+         LEFT JOIN photos p ON p.id = mp.photo_id
+         LEFT JOIN photo_assets pa ON pa.photo_id = mp.photo_id AND pa.rotation = ?
          WHERE d.id = ? AND g.enabled = 1
          ORDER BY g.id`,
       )
-      .all(deviceId) as Array<{
+      .all(rotation, deviceId) as Array<{
       id: number;
       rotation_mode: "random" | "sequential";
       min_interval: number;
       max_interval: number;
+      schedule_enabled: number;
+      manual_asset: string | null;
     }>;
 
     return rows.map((r) => ({
@@ -721,6 +729,8 @@ export class ScheduleService {
       minInterval: r.min_interval,
       maxInterval: r.max_interval,
       rules: this.galleryRulesFor(r.id),
+      scheduleEnabled: r.schedule_enabled === 1,
+      manualAsset: r.manual_asset,
     }));
   }
 

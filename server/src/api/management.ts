@@ -394,8 +394,12 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
     const galleries = db
       .prepare(
         `SELECT g.id, g.name, g.rotation_mode, g.min_interval, g.max_interval,
-                g.quiet_start, g.quiet_end, g.enabled, g.tone_preset,
-                (SELECT COUNT(*) FROM photos p WHERE p.gallery_id = g.id) AS photo_count
+                g.quiet_start, g.quiet_end, g.enabled, g.tone_preset, g.telegram_mode,
+                g.schedule_enabled,
+                (SELECT COUNT(*) FROM photos p WHERE p.gallery_id = g.id) AS photo_count,
+                (SELECT COUNT(*) FROM gallery_schedule_rules r WHERE r.gallery_id = g.id) AS rule_count,
+                (SELECT mp.photo_id FROM gallery_manual_pictures mp WHERE mp.gallery_id = g.id)
+                  AS manual_photo_id
          FROM galleries g
          WHERE g.user_id = ?
          ORDER BY g.name`,
@@ -470,11 +474,19 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       quiet_end: number | null;
       enabled: boolean;
       tone_preset: string;
+      telegram_mode: "queue" | "latest";
+      schedule_enabled: boolean;
     }>;
 
     /* The way the pictures are prepared has to be one we know. */
     if (body.tone_preset !== undefined && !PRESETS[body.tone_preset]) {
       await reply.code(400).send({ error: "unknown way of preparing the pictures" });
+      return;
+    }
+
+    /* The way the pictures from a chat arrive has to be one we know. */
+    if (body.telegram_mode !== undefined && body.telegram_mode !== "queue" && body.telegram_mode !== "latest") {
+      await reply.code(400).send({ error: "unknown way of receiving pictures" });
       return;
     }
 
@@ -688,6 +700,117 @@ export function registerManagementApi(app: FastifyInstance, options: ManagementO
       await reply.code(404).send({ error: "unknown rule" });
       return;
     }
+
+    invalidateGallery(Number(id));
+
+    await reply.send({ status: "ok" });
+  });
+
+  // ---------------------------------------------------------------------
+  // The picture a gallery shows when its schedule is off
+  // ---------------------------------------------------------------------
+
+  /**
+   * The picture a gallery shows when it has no schedule.
+   *
+   * A gallery with no rules changes only when the owner says so. This is
+   * the picture it shows then.
+   */
+  app.get(`${basePath}/galleries/:id/manual-picture`, async (request, reply) => {
+    const userId = await requireUser(request, reply);
+    if (userId === null) return;
+
+    const { id } = request.params as { id: string };
+    const gallery = db
+      .prepare("SELECT id FROM galleries WHERE id = ? AND user_id = ?")
+      .get(Number(id), userId);
+    if (!gallery) {
+      await reply.code(404).send({ error: "unknown gallery" });
+      return;
+    }
+
+    const manual = db
+      .prepare(
+        `SELECT mp.photo_id, mp.content_hash, p.filename
+         FROM gallery_manual_pictures mp
+         JOIN photos p ON p.id = mp.photo_id
+         WHERE mp.gallery_id = ?`,
+      )
+      .get(Number(id)) as
+      | { photo_id: number; content_hash: string; filename: string }
+      | undefined;
+
+    await reply.send({ picture: manual ?? null });
+  });
+
+  /**
+   * Set the picture a gallery shows when it has no schedule.
+   *
+   * The picture has to be one of the gallery's own, so that it is
+   * rendered for the panel in the first place.
+   */
+  app.put(`${basePath}/galleries/:id/manual-picture`, async (request, reply) => {
+    const userId = await requireUser(request, reply);
+    if (userId === null) return;
+
+    const { id } = request.params as { id: string };
+    const gallery = db
+      .prepare("SELECT id FROM galleries WHERE id = ? AND user_id = ?")
+      .get(Number(id), userId);
+    if (!gallery) {
+      await reply.code(404).send({ error: "unknown gallery" });
+      return;
+    }
+
+    const body = request.body as { photo_id?: number };
+    if (!body?.photo_id) {
+      await reply.code(400).send({ error: "photo_id is required" });
+      return;
+    }
+
+    const photo = db
+      .prepare("SELECT id, content_hash FROM photos WHERE id = ? AND gallery_id = ?")
+      .get(body.photo_id, Number(id)) as { id: number; content_hash: string | null } | undefined;
+    if (!photo) {
+      await reply.code(404).send({ error: "unknown photo" });
+      return;
+    }
+    if (!photo.content_hash) {
+      await reply.code(400).send({ error: "the photo has not been rendered yet" });
+      return;
+    }
+
+    db.prepare(
+      `INSERT INTO gallery_manual_pictures (gallery_id, photo_id, content_hash)
+       VALUES (?, ?, ?)
+       ON CONFLICT(gallery_id) DO UPDATE SET
+         photo_id = excluded.photo_id,
+         content_hash = excluded.content_hash,
+         updated_at = datetime('now')`,
+    ).run(Number(id), photo.id, photo.content_hash);
+
+    invalidateGallery(Number(id));
+
+    await reply.send({ status: "ok" });
+  });
+
+  /**
+   * Stop the gallery showing a set picture.
+   */
+  app.delete(`${basePath}/galleries/:id/manual-picture`, async (request, reply) => {
+    const userId = await requireUser(request, reply);
+    if (userId === null) return;
+
+    const { id } = request.params as { id: string };
+    const gallery = db
+      .prepare("SELECT id FROM galleries WHERE id = ? AND user_id = ?")
+      .get(Number(id), userId);
+    if (!gallery) {
+      await reply.code(404).send({ error: "unknown gallery" });
+      return;
+    }
+
+    db.prepare("DELETE FROM gallery_manual_pictures WHERE gallery_id = ?").run(Number(id));
 
     invalidateGallery(Number(id));
 

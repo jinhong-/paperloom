@@ -65,6 +65,22 @@ export interface GalleryPolicy {
    * gallery is still for that time.
    */
   readonly rules?: readonly GalleryRule[];
+  /**
+   * Whether the gallery changes its picture on its own.
+   *
+   * A gallery that is off changes only when the owner sets the picture by
+   * hand. It is a setting rather than something worked out from the
+   * rules, because a gallery that has just been made has no rules yet,
+   * and that is not the same as a gallery that has been turned off.
+   */
+  readonly scheduleEnabled?: boolean;
+  /**
+   * The picture the owner has set by hand.
+   *
+   * It is used when the gallery is off, and is the only picture the
+   * frame is given.
+   */
+  readonly manualAsset?: string | null;
 }
 
 /** A device's sync and quiet-hours policy. */
@@ -366,6 +382,23 @@ export function materializeSchedule(input: MaterializeInput): DisplayEvent[] {
   while (cursor < windowEnd && events.length < maxEvents && turns < maxTurns) {
     turns += 1;
     const gallery = galleries[rng.below(galleries.length)]!;
+
+    /* A gallery that is off shows the picture the owner has set by hand.
+     *
+     * It changes only when the owner says so, so the picture is shown
+     * once, and then the gallery waits for the next one to be set. */
+    if (gallery.scheduleEnabled === false) {
+      const manual = gallery.manualAsset;
+      if (manual) {
+        const already = existingByAt.get(floorToMinute(cursor));
+        if (!already) {
+          events.push({ at: cursor, asset: manual });
+        }
+      }
+
+      /* There is nothing more to put in the window, so the loop is over. */
+      break;
+    }
 
     /* Choose the interval for the *next* display, so the first event lands
      * at the window start and subsequent ones are spaced out.

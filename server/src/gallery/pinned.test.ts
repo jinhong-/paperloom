@@ -257,6 +257,56 @@ test("a newer picture queues behind the one pinned before", async () => {
   );
 });
 
+test("in the latest mode a newer picture replaces the one waiting", async () => {
+  const world = await makeWorld();
+
+  /* A gallery that changes once a day has no use for a queue of
+   * pictures: only the last one sent is of any interest. */
+  world.db
+    .prepare("UPDATE galleries SET telegram_mode = 'latest' WHERE id = ?")
+    .run(world.galleryId);
+
+  const first = await world.photos.addPhoto(world.galleryId, "one.png", await image(220, 30, 30), {
+    pin: true,
+  });
+  const second = await world.photos.addPhoto(world.galleryId, "two.png", await image(30, 30, 220), {
+    pin: true,
+  });
+
+  /* Only the newer picture is waiting. */
+  const waiting = world.pins.pendingFor(world.deviceId);
+  assert.equal(waiting.length, 1, "only one picture must be waiting");
+  assert.equal(waiting[0]!.photo_id, second.id, "the newer picture must be the one waiting");
+
+  /* And the one that was waiting has gone. */
+  const all = world.db
+    .prepare("SELECT photo_id FROM pinned_photos WHERE device_id = ?")
+    .all(world.deviceId) as Array<{ photo_id: number }>;
+  assert.equal(all.length, 1);
+  assert.notEqual(all[0]!.photo_id, first.id, "the picture it replaced must be gone");
+});
+
+test("in the latest mode the picture is shown at the moment the old one was waiting for", async () => {
+  const world = await makeWorld();
+
+  world.db
+    .prepare("UPDATE galleries SET telegram_mode = 'latest' WHERE id = ?")
+    .run(world.galleryId);
+
+  await world.photos.addPhoto(world.galleryId, "one.png", await image(220, 30, 30), { pin: true });
+  const firstMoment = world.pins.pendingFor(world.deviceId)[0]!.at;
+
+  await world.photos.addPhoto(world.galleryId, "two.png", await image(30, 30, 220), { pin: true });
+
+  const waiting = world.pins.pendingFor(world.deviceId);
+  assert.equal(waiting.length, 1);
+  assert.equal(
+    waiting[0]!.at,
+    firstMoment,
+    "the picture must be shown at the moment the frame was already expecting one",
+  );
+});
+
 test("every picture in the queue is in the plan", () => {
   const candidates: Candidate[] = [
     { photoId: 2, contentHash: "ordinary", weight: 1, belongsTo: 1 },
