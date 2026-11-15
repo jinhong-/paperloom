@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/jinhong-/paperloom/compare/paperloom-web-v0.4.0...paperloom-web-v0.4.1) (2026-11-15)
+
+
+### Bug Fixes
+
+* a frame waiting to be claimed can be found and claimed ([fbe63cd](https://github.com/jinhong-/paperloom/commit/fbe63cd7c1c47ce2b67d2baf85b543ab2165c946))
+
 ## [0.4.0](https://github.com/jinhong-/paperloom/compare/paperloom-web-v0.3.1...paperloom-web-v0.4.0) (2026-11-15)
 
 
