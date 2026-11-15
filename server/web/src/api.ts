@@ -17,6 +17,12 @@ export interface Gallery {
   enabled: number;
   /** How the pictures are prepared for the panel. */
   tone_preset: string;
+  /** How the pictures from a chat arrive. */
+  telegram_mode: "queue" | "latest";
+  /** Whether the gallery changes its picture on its own. */
+  schedule_enabled: number;
+  /** The picture shown when the gallery is off, if there is one. */
+  manual_photo_id: number | null;
   photo_count: number;
 }
 
@@ -370,6 +376,24 @@ export const api = {
       `/api/galleries/${galleryId}/schedule-rules/${ruleId}`,
       { method: "DELETE" },
     ),
+
+  /* The picture a gallery shows when its schedule is off */
+
+  manualPicture: (galleryId: number) =>
+    request<{
+      picture: { photo_id: number; content_hash: string; filename: string } | null;
+    }>(`/api/galleries/${galleryId}/manual-picture`),
+
+  setManualPicture: (galleryId: number, photoId: number) =>
+    request<{ status: string }>(`/api/galleries/${galleryId}/manual-picture`, {
+      method: "PUT",
+      body: JSON.stringify({ photo_id: photoId }),
+    }),
+
+  removeManualPicture: (galleryId: number) =>
+    request<{ status: string }>(`/api/galleries/${galleryId}/manual-picture`, {
+      method: "DELETE",
+    }),
 
   /* Photos */
   photos: (galleryId: number) => request<Photo[]>(`/api/galleries/${galleryId}/photos`),

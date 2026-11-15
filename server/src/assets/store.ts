@@ -142,15 +142,33 @@ export class AssetStore {
   }
 
   /**
-   * Delete an asset that is no longer referenced by any photo.
+   * Delete an asset that is no longer referenced.
+   *
+   * An asset is kept as long as anything names it: a photo, any way of
+   * mounting a frame that shows it, or the picture a gallery shows while
+   * it is off. The last of these matters because the frame is told about
+   * it at a check-in, and a frame that cannot download it is left with
+   * the picture it already had.
    *
    * Returns true if something was removed.
    */
   async remove(contentHash: string): Promise<boolean> {
     const referenced = this.db
-      .prepare("SELECT 1 FROM photos WHERE content_hash = ? LIMIT 1")
+      .prepare(
+        `SELECT 1 FROM photos WHERE content_hash = ? LIMIT 1`,
+      )
       .get(contentHash);
     if (referenced) return false;
+
+    const inAFrame = this.db
+      .prepare("SELECT 1 FROM photo_assets WHERE content_hash = ? LIMIT 1")
+      .get(contentHash);
+    if (inAFrame) return false;
+
+    const isSetAside = this.db
+      .prepare("SELECT 1 FROM gallery_manual_pictures WHERE content_hash = ? LIMIT 1")
+      .get(contentHash);
+    if (isSetAside) return false;
 
     await rm(this.pathFor(contentHash), { force: true });
     this.db.prepare("DELETE FROM assets WHERE content_hash = ?").run(contentHash);

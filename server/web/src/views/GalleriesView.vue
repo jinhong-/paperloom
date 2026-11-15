@@ -1,7 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 
-import { api, type Gallery, type GalleryScheduleRule, type Photo, TONE_PRESETS } from "@/api";
+import {
+  api,
+  type Gallery,
+  type GalleryScheduleRule,
+  type Photo,
+  TONE_PRESETS,
+} from "@/api";
+import GallerySchedule, { type DraftRule } from "@/components/GallerySchedule.vue";
 import { describeInterval } from "@/lib/syncRules";
 import { useSessionStore } from "@/stores/session";
 
@@ -16,17 +23,24 @@ const notice = ref<string | null>(null);
 /* The rules that say when this gallery changes its picture. */
 const rules = ref<GalleryScheduleRule[]>([]);
 
-/* The rule being written. */
-const ruleStart = ref("22:00");
-const ruleEnd = ref("07:00");
-const ruleMin = ref(3600);
-const ruleMax = ref(3600);
-const ruleSilent = ref(false);
+/* Whether the gallery changes its picture on its own. */
+const scheduleEnabled = ref(true);
+
+/* The picture the gallery shows when it is off. */
+const manualPhotoId = ref<number | null>(null);
+
+/* How the pictures from a chat arrive. */
+const telegramMode = ref<"queue" | "latest">("queue");
 
 const newName = ref("");
 const newMode = ref<"random" | "sequential">("random");
 const newMin = ref(900);
 const newMax = ref(21600);
+
+/* The schedule of a gallery being made, using the same editor as an
+ * existing one. */
+const newEnabled = ref(true);
+const newRules = ref<DraftRule[]>([]);
 
 const dragging = ref(false);
 const fileInput = ref<HTMLInputElement | null>(null);
@@ -45,6 +59,9 @@ async function selectGallery(target: Gallery): Promise<void> {
   photos.value = [];
   missingPreviews.value = new Set();
   error.value = null;
+  scheduleEnabled.value = target.schedule_enabled === 1;
+  telegramMode.value = target.telegram_mode === "latest" ? "latest" : "queue";
+  manualPhotoId.value = target.manual_photo_id ?? null;
   try {
     photos.value = await api.photos(target.id);
     rules.value = await api.galleryScheduleRules(target.id);
@@ -76,22 +93,65 @@ async function saveGallery(body: Partial<Gallery>): Promise<void> {
 }
 
 /**
- * Add a rule saying when the gallery changes.
+ * The rules as the editor holds them.
+ *
+ * The editor works in the owner's terms: which days, and how often. The
+ * server works in seconds, so the two are converted here.
  */
-async function addRule(): Promise<void> {
+const draftRules = computed<DraftRule[]>(() =>
+  rules.value.map((rule) => ({
+    id: rule.id,
+    days: rule.days,
+    startMinute: rule.start_minute,
+    endMinute: rule.end_minute,
+    intervalSeconds:
+      rule.min_interval === null && rule.max_interval === null
+        ? null
+        : (rule.max_interval ?? rule.min_interval ?? 0),
+  })),
+);
+
+/**
+ * Save the rules the editor holds.
+ *
+ * The whole set is saved, because the editor holds all of it and the
+ * rules are not ordered by anything that matters: which rule wins where
+ * they overlap is worked out from their priority.
+ */
+async function saveRules(drafts: DraftRule[]): Promise<void> {
   if (!selected.value) return;
   busy.value = true;
   error.value = null;
   notice.value = null;
   try {
-    await api.addGalleryScheduleRule(selected.value.id, {
-      start_minute: toMinutes(ruleStart.value),
-      end_minute: toMinutes(ruleEnd.value),
-      min_interval: ruleSilent.value ? null : ruleMin.value,
-      max_interval: ruleSilent.value ? null : ruleMax.value,
-    });
+    /* The rules that are gone are removed, and the ones that are left
+     * are added or changed. */
+    const kept = new Set(drafts.map((rule) => rule.id).filter((id) => id !== undefined));
+
+    for (const rule of rules.value) {
+      if (!kept.has(rule.id)) {
+        await api.removeGalleryScheduleRule(selected.value.id, rule.id);
+      }
+    }
+
+    for (const draft of drafts) {
+      const body = {
+        days: draft.days,
+        start_minute: draft.startMinute,
+        end_minute: draft.endMinute,
+        min_interval: draft.intervalSeconds,
+        max_interval: draft.intervalSeconds,
+      };
+
+      if (draft.id === undefined) {
+        await api.addGalleryScheduleRule(selected.value.id, body);
+      } else {
+        await api.updateGalleryScheduleRule(selected.value.id, draft.id, body);
+      }
+    }
+
     rules.value = await api.galleryScheduleRules(selected.value.id);
-    notice.value = "The rule has been added.";
+    notice.value = "The schedule was saved. The frame picks it up at its next check-in.";
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -100,15 +160,30 @@ async function addRule(): Promise<void> {
 }
 
 /**
- * Remove a rule.
+ * Turn the schedule on or off.
  */
-async function removeRule(rule: GalleryScheduleRule): Promise<void> {
+async function setScheduleEnabled(enabled: boolean): Promise<void> {
+  scheduleEnabled.value = enabled;
+  await saveGallery({ schedule_enabled: enabled ? 1 : 0 });
+}
+
+/**
+ * Set the picture the gallery shows when it is off.
+ */
+async function setManualPicture(photoId: number | null): Promise<void> {
   if (!selected.value) return;
   busy.value = true;
   error.value = null;
+  notice.value = null;
   try {
-    await api.removeGalleryScheduleRule(selected.value.id, rule.id);
-    rules.value = await api.galleryScheduleRules(selected.value.id);
+    if (photoId === null) {
+      await api.removeManualPicture(selected.value.id);
+      manualPhotoId.value = null;
+    } else {
+      await api.setManualPicture(selected.value.id, photoId);
+      manualPhotoId.value = photoId;
+    }
+    notice.value = "The picture was set. The frame picks it up at its next check-in.";
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -117,35 +192,11 @@ async function removeRule(rule: GalleryScheduleRule): Promise<void> {
 }
 
 /**
- * Turn a clock time into minutes from midnight.
+ * Change how the pictures from a chat arrive.
  */
-function toMinutes(text: string): number {
-  const match = /^(\d{1,2}):(\d{2})$/.exec(text.trim());
-  if (!match) return 0;
-  return Number(match[1]) * 60 + Number(match[2]);
-}
-
-/**
- * Turn minutes from midnight into a clock time.
- */
-function toClock(minute: number): string {
-  const hours = Math.floor(minute / 60);
-  return `${String(hours).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
-}
-
-/**
- * The hours a rule covers, as they are shown.
- *
- * A rule that covers the whole day says so, rather than naming the
- * middle of the night twice.
- */
-function describeRuleHours(rule: GalleryScheduleRule): string {
-  const wholeDay =
-    rule.start_minute === 0 &&
-    rule.end_minute === 1440 &&
-    rule.days === 127;
-  if (wholeDay) return "all day";
-  return `${toClock(rule.start_minute)} – ${toClock(rule.end_minute)}`;
+async function setTelegramMode(mode: "queue" | "latest"): Promise<void> {
+  telegramMode.value = mode;
+  await saveGallery({ telegram_mode: mode });
 }
 
 /**
@@ -155,13 +206,31 @@ async function createGallery(): Promise<void> {
   if (!newName.value.trim()) return;
   error.value = null;
   try {
-    await api.createGallery({
+    const created = await api.createGallery({
       name: newName.value.trim(),
       rotation_mode: newMode.value,
       min_interval: newMin.value,
       max_interval: newMax.value,
     });
+
+    /* The schedule is saved straight away, so that a gallery is made the
+     * way it is going to be used rather than being left half set up. */
+    await api.updateGallery(created.id, {
+      schedule_enabled: newEnabled.value ? 1 : 0,
+    });
+
+    for (const draft of newRules.value) {
+      await api.addGalleryScheduleRule(created.id, {
+        days: draft.days,
+        start_minute: draft.startMinute,
+        end_minute: draft.endMinute,
+        min_interval: draft.intervalSeconds,
+        max_interval: draft.intervalSeconds,
+      });
+    }
+
     newName.value = "";
+    newRules.value = [];
     await session.reload();
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
@@ -277,7 +346,10 @@ onMounted(async () => {
             <div class="small muted">
               {{ item.photo_count }} photo{{ item.photo_count === 1 ? "" : "s" }} ·
               {{ item.rotation_mode }}
-              <template v-if="item.rotation_mode === 'random'">
+              <template v-if="!item.schedule_enabled">
+                · off
+              </template>
+              <template v-else-if="item.rotation_mode === 'random'">
                 · every {{ describeInterval(item.min_interval) }}–{{
                   describeInterval(item.max_interval)
                 }}
@@ -321,6 +393,17 @@ onMounted(async () => {
           <input id="gallery-max" v-model.number="newMax" type="number" min="60" />
           <div class="small muted">That is every {{ describeInterval(newMax) }}.</div>
         </div>
+
+        <!-- The same schedule editor an existing gallery has, so that the
+             two do not drift apart. -->
+        <h3>Schedule</h3>
+        <GallerySchedule
+          :enabled="newEnabled"
+          :rules="newRules"
+          @update:enabled="newEnabled = $event"
+          @update:rules="newRules = $event"
+        />
+
         <button @click="createGallery">Create gallery</button>
       </div>
     </div>
@@ -413,66 +496,83 @@ onMounted(async () => {
           <h3>When the picture changes</h3>
           <p class="small muted">
             The gallery changes the picture at its own pace. A rule says
-            how often that is during certain hours, so it can change often
-            by day and slowly overnight.
+            which days it applies to and how often the picture changes
+            during them, so it can change often by day and slowly
+            overnight.
           </p>
 
-          <div v-if="rules.length === 0" class="empty">
-            No rules. The gallery changes at the pace set above, all day.
+          <GallerySchedule
+            :enabled="scheduleEnabled"
+            :rules="draftRules"
+            @update:enabled="setScheduleEnabled"
+            @update:rules="saveRules"
+          />
+        </div>
+
+        <!-- The picture shown while the gallery is off -->
+        <div v-if="!scheduleEnabled" class="card">
+          <h3>The picture it shows</h3>
+          <p class="small muted">
+            The gallery is off, so it shows this picture until you set
+            another one. The frame keeps it when it is turned off and on
+            again.
+          </p>
+
+          <div v-if="photos.length === 0" class="empty">
+            No photos yet. Add one first.
           </div>
 
-          <div
-            v-for="rule in rules"
-            :key="rule.id"
-            class="row between"
-            style="padding: 8px 0; border-bottom: 1px solid var(--line)"
+          <div v-else class="row" style="flex-wrap: wrap; gap: 8px">
+            <button
+              v-for="photo in photos"
+              :key="photo.id"
+              class="secondary"
+              :class="{ 'is-selected': manualPhotoId === photo.id }"
+              @click="setManualPicture(photo.id)"
+            >
+              {{ photo.filename }}
+            </button>
+          </div>
+
+          <button
+            v-if="manualPhotoId !== null"
+            class="secondary"
+            style="margin-top: 8px"
+            @click="setManualPicture(null)"
           >
-            <div class="grow">
-              <strong>{{ describeRuleHours(rule) }}</strong>
-              <div class="small muted">
-                <template v-if="rule.min_interval === null && rule.max_interval === null">
-                  nothing is shown
-                </template>
-                <template v-else>
-                  every {{ describeInterval(rule.min_interval ?? 0) }}–{{
-                    describeInterval(rule.max_interval ?? 0)
-                  }}
-                </template>
-              </div>
+            Show nothing
+          </button>
+        </div>
+
+        <!-- How the pictures from a chat arrive -->
+        <div class="card">
+          <h3>Pictures from a chat</h3>
+          <p class="small muted">
+            When a picture is sent to this gallery's bot, it either joins
+            the end of the queue or replaces the picture that is waiting.
+          </p>
+
+          <div class="field">
+            <label for="gallery-telegram">How they arrive</label>
+            <select
+              id="gallery-telegram"
+              :value="telegramMode"
+              @change="setTelegramMode(($event.target as HTMLSelectElement).value as 'queue' | 'latest')"
+            >
+              <option value="queue">In the order they were sent</option>
+              <option value="latest">The latest one replaces the last</option>
+            </select>
+            <div class="small muted">
+              <template v-if="telegramMode === 'queue'">
+                Every picture is shown, one after another. This is what a
+                gallery that changes often wants.
+              </template>
+              <template v-else>
+                Only the last picture sent is shown. This is what a
+                gallery that changes once a day wants: the ones before it
+                would only be shown long after they had been sent.
+              </template>
             </div>
-            <button class="danger" :disabled="busy" @click="removeRule(rule)">Remove</button>
-          </div>
-
-          <div class="field" style="margin-top: 12px">
-            <label>Add a rule</label>
-            <div class="row">
-              <div class="field grow">
-                <label for="rule-start">From</label>
-                <input id="rule-start" v-model="ruleStart" placeholder="22:00" />
-              </div>
-              <div class="field grow">
-                <label for="rule-end">Until</label>
-                <input id="rule-end" v-model="ruleEnd" placeholder="07:00" />
-              </div>
-            </div>
-
-            <label class="check small">
-              <input v-model="ruleSilent" type="checkbox" />
-              Nothing is shown during these hours
-            </label>
-
-            <div v-if="!ruleSilent" class="row">
-              <div class="field grow">
-                <label for="rule-min">Minimum gap (seconds)</label>
-                <input id="rule-min" v-model.number="ruleMin" type="number" min="60" />
-              </div>
-              <div class="field grow">
-                <label for="rule-max">Maximum gap (seconds)</label>
-                <input id="rule-max" v-model.number="ruleMax" type="number" min="60" />
-              </div>
-            </div>
-
-            <button :disabled="busy" @click="addRule">Add rule</button>
           </div>
         </div>
       </template>

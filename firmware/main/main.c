@@ -495,8 +495,16 @@ static int64_t run_cycle(wake_reason_t reason) {
          *
          * Saying so is better than leaving a blank panel, which looks
          * like a fault. The screen points at the dashboard where the
-         * photos are added. */
-        if (!display_task_ready_shown()) {
+         * photos are added.
+         *
+         * But a frame that has already shown a picture keeps it. A
+         * gallery that has been turned off has nothing scheduled, and
+         * the last picture is still the right thing to show: the frame
+         * is meant to keep showing it until it is told otherwise. */
+        const char *shown = schedule_displayed_asset();
+        if (shown != NULL && shown[0] != '\0') {
+            ESP_LOGI(TAG, "There is nothing to show, so the last picture stays");
+        } else if (!display_task_ready_shown()) {
             ESP_LOGI(TAG, "There are no photos yet; showing the ready screen");
             display_task_show_ready_screen(
                 sync_dashboard_url()[0] != '\0' ? sync_dashboard_url() : sync_server_url());
